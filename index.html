@@ -40,7 +40,7 @@
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
         import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc, updateDoc, getDoc, writeBatch } from 'firebase/firestore';
-        import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, RotateCcw, Send, BellRing, ArrowRightLeft } from 'lucide-react';
+        import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, RotateCcw, Send, BellRing, ArrowRightLeft, UserCog } from 'lucide-react';
 
         // --- FIREBASE CONFIG ---
         const firebaseConfig = {
@@ -67,7 +67,7 @@
 
         const DAYS_DE = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
         const MONTHS_DE = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
-        const ADMIN_PIN = "0303";
+        const DEFAULT_ADMIN_PIN = "0303";
 
         const formatDateId = (date) => {
           const year = date.getFullYear();
@@ -85,6 +85,8 @@
         function App() {
           const [user, setUser] = useState(null);
           const [activeChefId, setActiveChefId] = useState(null); 
+          const [isAdmin, setIsAdmin] = useState(false); 
+
           const [currentDate, setCurrentDate] = useState(new Date());
           const [shifts, setShifts] = useState({});
           const [tasks, setTasks] = useState([]); 
@@ -92,17 +94,20 @@
           const [statsFilter, setStatsFilter] = useState('month'); 
           
           const [customNames, setCustomNames] = useState({});
-          const [showAdmin, setShowAdmin] = useState(false);
+          const [showAdminSettings, setShowAdminSettings] = useState(false); 
           const [tempNames, setTempNames] = useState({}); 
 
           const [showPinEntry, setShowPinEntry] = useState(false);
           const [pinInput, setPinInput] = useState('');
           const [pinError, setPinError] = useState(false);
 
-          const [isHistoryMode, setIsHistoryMode] = useState(false);
-          const [historyTargetChefId, setHistoryTargetChefId] = useState(CHEF_TEMPLATES[0].id);
+          // User Login PIN State
+          const [userLoginState, setUserLoginState] = useState({ isOpen: false, chefId: null, attempt: '', error: false });
 
+          // Admin Modals
           const [selectedShiftModal, setSelectedShiftModal] = useState(null); 
+          const [adminBookingModal, setAdminBookingModal] = useState(null);
+
           const [notifications, setNotifications] = useState([]); 
           const [showNotifications, setShowNotifications] = useState(false);
           
@@ -140,19 +145,15 @@
             return () => { unsubShifts(); unsubTasks(); unsubSettings(); };
           }, [user]);
 
-          // --- AUTO-DELETE TASKS (>3 Days) ---
+          // Auto-Delete Tasks
           useEffect(() => {
               if (tasks.length === 0) return;
-              
               const now = new Date();
               tasks.forEach(task => {
-                  // Nur erledigte Aufgaben prüfen
                   if (task.completed && task.completedAt) {
                       const completedDate = new Date(task.completedAt);
                       const diffTime = Math.abs(now - completedDate);
                       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-                      
-                      // Wenn älter als 3 Tage -> Löschen
                       if (diffDays > 3) {
                           deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', task.id))
                             .catch(e => console.error("Auto-Delete failed", e));
@@ -161,26 +162,24 @@
               });
           }, [tasks]);
 
-
-          // Check Notifications
+          // Notifications
           useEffect(() => {
               if (!activeChefId || !shifts) return;
-              
               const myNotifications = Object.values(shifts).filter(shift => 
                   shift.chefId === activeChefId && shift.requestFrom
               );
-              
               setNotifications(myNotifications);
               if (myNotifications.length > 0) {
                   setShowNotifications(true);
               }
           }, [shifts, activeChefId]);
 
-
+          // Helpers
           const activeChefs = useMemo(() => {
               return CHEF_TEMPLATES.map(t => ({
                   ...t,
-                  name: customNames[t.id] || t.defaultName
+                  name: customNames[t.id] || t.defaultName,
+                  pin: customNames[t.id + '_pin'] || '' 
               }));
           }, [customNames]);
 
@@ -188,76 +187,99 @@
               if (!activeChefId || !shifts) return [];
               const today = new Date();
               today.setHours(0,0,0,0);
-              
               return Object.values(shifts)
                   .filter(s => s.chefId === activeChefId && new Date(s.date) >= today)
                   .sort((a, b) => new Date(a.date) - new Date(b.date));
           }, [shifts, activeChefId]);
 
+          // Admin Login Handlers
           const handlePinSubmit = (e) => {
               e.preventDefault();
-              if (pinInput === ADMIN_PIN) {
+              const currentAdminPin = customNames.admin_pin || DEFAULT_ADMIN_PIN;
+              
+              if (pinInput === currentAdminPin) {
                   setPinInput('');
                   setPinError(false);
                   setShowPinEntry(false);
-                  openAdmin();
+                  setIsAdmin(true); 
               } else {
                   setPinError(true);
                   setPinInput('');
               }
           };
 
-          const openAdmin = () => {
+          const openAdminSettings = () => {
               const current = {};
-              CHEF_TEMPLATES.forEach(c => { current[c.id] = customNames[c.id] || c.defaultName; });
+              CHEF_TEMPLATES.forEach(c => { 
+                  current[c.id] = customNames[c.id] || c.defaultName; 
+                  current[c.id + '_pin'] = customNames[c.id + '_pin'] || '';
+              });
+              current.admin_pin = customNames.admin_pin || DEFAULT_ADMIN_PIN;
               setTempNames(current);
-              setShowAdmin(true);
+              setShowAdminSettings(true);
           };
 
           const saveNames = async () => {
               await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general'), tempNames, { merge: true });
-              setShowAdmin(false);
+              setShowAdminSettings(false);
           };
 
-          const startHistoryMode = () => {
-              setIsHistoryMode(true);
-              setShowAdmin(false);
-              setHistoryTargetChefId(activeChefId || CHEF_TEMPLATES[0].id);
+          // User Login Logic
+          const handleChefLoginClick = (chef) => {
+              if (chef.pin && chef.pin.trim() !== '') {
+                  setUserLoginState({ isOpen: true, chefId: chef.id, attempt: '', error: false });
+              } else {
+                  setActiveChefId(chef.id);
+                  setIsAdmin(false);
+              }
+          };
+
+          const submitUserPin = (e) => {
+              e.preventDefault();
+              const chef = activeChefs.find(c => c.id === userLoginState.chefId);
+              if (chef && userLoginState.attempt === chef.pin) {
+                  setActiveChefId(chef.id);
+                  setIsAdmin(false);
+                  setUserLoginState({ isOpen: false, chefId: null, attempt: '', error: false });
+              } else {
+                  setUserLoginState(prev => ({ ...prev, error: true, attempt: '' }));
+              }
           };
 
           // --- Calendar Interaction ---
           const handleDayClick = async (dayDate) => {
             const dateId = formatDateId(dayDate);
             const existingShift = shifts[dateId];
-            
-            if (isHistoryMode) {
-                const targetChef = activeChefs.find(c => c.id === historyTargetChefId);
-                if (existingShift && existingShift.chefId === historyTargetChefId) {
-                     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', dateId));
+            const dateString = dayDate.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+
+            // ADMIN MODE INTERACTION
+            if (isAdmin) {
+                if (existingShift) {
+                    setSelectedShiftModal({
+                        shift: existingShift,
+                        dateString: dateString,
+                        isAdminAction: true
+                    });
                 } else {
-                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', dateId), {
-                        date: dateId,
-                        chefId: targetChef.id,
-                        chefName: targetChef.name,
-                        chefColor: targetChef.color,
-                        isWeekend: isWeekend(dayDate),
-                        timestamp: new Date().toISOString(),
-                        requestFrom: null,
-                        swapOfferDate: null
+                    setAdminBookingModal({
+                        dateId: dateId,
+                        dateString: dateString,
+                        isWeekend: isWeekend(dayDate)
                     });
                 }
                 return;
             }
 
+            // USER MODE INTERACTION
             if (!activeChefId) return;
             const chef = activeChefs.find(c => c.id === activeChefId);
-            const dateString = dayDate.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
 
             if (existingShift) {
                 setSelectedShiftModal({
                     shift: existingShift,
                     dateString: dateString,
-                    isMine: existingShift.chefId === activeChefId
+                    isMine: existingShift.chefId === activeChefId,
+                    isAdminAction: false
                 });
                 setSwapOfferId(''); 
             } else {
@@ -292,6 +314,26 @@
             } catch (e) { console.error(e); }
             setSelectedShiftModal(null);
           };
+
+          const adminAssignShift = async (targetChefId) => {
+              if (!adminBookingModal) return;
+              const chef = activeChefs.find(c => c.id === targetChefId);
+              if (!chef) return;
+
+              try {
+                  await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', adminBookingModal.dateId), {
+                        date: adminBookingModal.dateId,
+                        chefId: chef.id,
+                        chefName: chef.name, 
+                        chefColor: chef.color,
+                        isWeekend: adminBookingModal.isWeekend,
+                        timestamp: new Date().toISOString(),
+                        requestFrom: null,
+                        swapOfferDate: null
+                  });
+              } catch(e) { console.error(e); }
+              setAdminBookingModal(null);
+          }
 
           const sendSwapRequest = async () => {
               if (!selectedShiftModal || !activeChefId) return;
@@ -372,10 +414,11 @@
           const handleAddTask = async (e) => {
             e.preventDefault();
             if (!newTaskText.trim()) return;
+            const creatorId = isAdmin ? 'admin' : activeChefId;
             await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tasks'), {
                 text: newTaskText.trim(),
                 assignedTo: newTaskAssignee, 
-                createdBy: activeChefId,
+                createdBy: creatorId,
                 createdAt: new Date().toISOString(),
                 completed: false
             });
@@ -384,10 +427,11 @@
 
           const toggleTask = async (task) => {
               const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', task.id);
+              const completerId = isAdmin ? 'admin' : activeChefId;
               await updateDoc(taskRef, {
                   completed: !task.completed,
                   completedAt: !task.completed ? new Date().toISOString() : null,
-                  completedBy: !task.completed ? activeChefId : null
+                  completedBy: !task.completed ? completerId : null
               });
           };
 
@@ -431,7 +475,6 @@
 
           const sortedTasks = useMemo(() => {
             const open = tasks.filter(t => !t.completed).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-            // Show all completed tasks (but auto-delete handles cleanup > 3 days)
             const done = tasks.filter(t => t.completed).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
             return { open, done };
           }, [tasks, activeChefId]);
@@ -457,7 +500,7 @@
           // --- Render ---
           if (!user) return <div className="min-h-screen flex items-center justify-center text-slate-500">Lade Anwendung...</div>;
 
-          if (!activeChefId) {
+          if (!activeChefId && !isAdmin) {
             return (
               <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 relative">
                 <button onClick={() => { setShowPinEntry(true); setPinError(false); setPinInput(''); }} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"><Settings className="w-6 h-6" /></button>
@@ -466,12 +509,36 @@
                   <div className="mb-8"><h1 className="text-3xl font-black text-slate-900 tracking-tight">MABELLE</h1><p className="text-sm font-bold text-amber-700 uppercase tracking-[0.2em] mt-1">Manager Planer</p></div>
                   <div className="grid grid-cols-1 gap-3">
                     {activeChefs.map(chef => (
-                      <button key={chef.id} onClick={() => setActiveChefId(chef.id)} className="flex items-center p-4 border-2 border-slate-100 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group">
-                        <div className={`w-3 h-3 rounded-full ${chef.color} mr-4`}></div><span className="font-semibold text-slate-700 group-hover:text-blue-700">{chef.name}</span><ChevronRight className="ml-auto w-4 h-4 text-slate-400" />
+                      <button key={chef.id} onClick={() => handleChefLoginClick(chef)} className="flex items-center p-4 border-2 border-slate-100 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group">
+                        <div className={`w-3 h-3 rounded-full ${chef.color} mr-4`}></div>
+                        <span className="font-semibold text-slate-700 group-hover:text-blue-700">{chef.name}</span>
+                        {chef.pin && <Lock className="ml-auto w-3 h-3 text-slate-300" />}
+                        {!chef.pin && <ChevronRight className="ml-auto w-4 h-4 text-slate-400" />}
                       </button>
                     ))}
                   </div>
                 </div>
+
+                {/* USER LOGIN PIN MODAL */}
+                {userLoginState.isOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-xs w-full p-6">
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className="text-lg font-bold text-slate-800">Login: {activeChefs.find(c => c.id === userLoginState.chefId)?.name}</h3>
+                                <button onClick={() => setUserLoginState({isOpen:false, chefId:null, attempt:'', error:false})} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+                            </div>
+                            <form onSubmit={submitUserPin}>
+                                <div className="mb-4">
+                                    <input type="password" inputMode="numeric" autoFocus value={userLoginState.attempt} onChange={(e) => setUserLoginState(prev => ({...prev, attempt: e.target.value, error: false}))} placeholder="PIN eingeben" className={`w-full p-3 text-center text-lg tracking-widest border-2 rounded-xl outline-none transition-colors ${userLoginState.error ? 'border-red-500 bg-red-50' : 'border-slate-200 focus:border-blue-500'}`} />
+                                    {userLoginState.error && <p className="text-red-500 text-xs mt-2 text-center font-medium">Falscher Code</p>}
+                                </div>
+                                <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">Anmelden</button>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* ADMIN LOGIN MODAL */}
                 {showPinEntry && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
                         <div className="bg-white rounded-2xl shadow-2xl max-w-xs w-full p-6">
@@ -483,17 +550,6 @@
                         </div>
                     </div>
                 )}
-                {showAdmin && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-                        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto">
-                            <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-slate-800">Einstellungen</h3><button onClick={() => setShowAdmin(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button></div>
-                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Namen bearbeiten</h4>
-                            <div className="space-y-3 mb-6">{CHEF_TEMPLATES.map(chef => (<div key={chef.id} className="flex items-center gap-3"><div className={`w-3 h-3 rounded-full ${chef.color} flex-shrink-0`}></div><input type="text" value={tempNames[chef.id] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id]: e.target.value}))} placeholder={chef.defaultName} className="flex-1 p-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" /></div>))}</div>
-                            <button onClick={saveNames} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl flex items-center justify-center gap-2 mb-6"><Save className="w-4 h-4" /> Speichern</button>
-                            <div className="border-t border-slate-100 pt-4"><h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Datenverwaltung</h4><button onClick={startHistoryMode} className="w-full bg-slate-100 hover:bg-orange-50 hover:text-orange-600 text-slate-600 font-medium py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"><Edit3 className="w-4 h-4" /> Alte Daten nachtragen</button><p className="text-[10px] text-slate-400 mt-2 text-center">Aktiviert den Historien-Modus, um vergangene Schichten ohne Bestätigung schnell einzutragen.</p></div>
-                        </div>
-                    </div>
-                )}
               </div>
             );
           }
@@ -501,22 +557,27 @@
           const activeChef = activeChefs.find(c => c.id === activeChefId);
 
           return (
-            <div className={`min-h-screen pb-24 ${isHistoryMode ? 'bg-orange-50' : 'bg-slate-100'}`}>
+            <div className={`min-h-screen pb-24 ${isAdmin ? 'bg-orange-50' : 'bg-slate-100'}`}>
               <header className="bg-white shadow-sm sticky top-0 z-10">
                 <div className="max-w-3xl mx-auto px-4 py-3 flex justify-between items-center">
-                  {isHistoryMode ? (
-                      <div className="flex items-center gap-2 text-orange-600 font-bold"><Edit3 className="w-5 h-5" /><span>Historien-Modus</span></div>
+                  {isAdmin ? (
+                      <div className="flex items-center gap-2 text-orange-700 font-bold"><UserCog className="w-5 h-5" /><span>Administrator</span></div>
                   ) : (
                     <div className="flex items-center gap-3"><div className={`w-10 h-10 rounded-full ${activeChef?.color} flex items-center justify-center text-white font-bold text-sm shadow-sm`}>{activeChef?.name.charAt(0)}</div><div><p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Angemeldet als</p><p className="text-sm font-bold text-slate-800 leading-tight">{activeChef?.name}</p></div></div>
                   )}
-                  {isHistoryMode ? (<button onClick={() => { setIsHistoryMode(false); setActiveChefId(null); }} className="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold uppercase tracking-wide">Beenden</button>) : (<button onClick={() => setActiveChefId(null)} className="px-4 py-2 bg-slate-100 hover:bg-red-50 text-slate-600 hover:text-red-600 rounded-lg text-xs font-bold uppercase tracking-wide transition-colors">Abmelden</button>)}
+                  <div className="flex items-center gap-2">
+                      {isAdmin && (
+                          <button onClick={openAdminSettings} className="p-2 text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg transition-colors"><Settings className="w-4 h-4" /></button>
+                      )}
+                      <button onClick={() => { setActiveChefId(null); setIsAdmin(false); }} className="px-4 py-2 bg-slate-100 hover:bg-red-50 text-slate-600 hover:text-red-600 rounded-lg text-xs font-bold uppercase tracking-wide transition-colors">Abmelden</button>
+                  </div>
                 </div>
               </header>
 
               <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
                 
                 {/* --- NOTIFICATIONS --- */}
-                {showNotifications && (
+                {showNotifications && !isAdmin && (
                     <div className="bg-white border-l-4 border-blue-500 rounded-lg shadow-md p-4 mb-4 animate-pop">
                         <div className="flex items-center justify-between mb-3">
                             <h3 className="font-bold text-slate-800 flex items-center gap-2"><BellRing className="w-5 h-5 text-blue-500" /> Tauschanfragen</h3>
@@ -526,19 +587,11 @@
                             {notifications.map(shift => {
                                 const requester = activeChefs.find(c => c.id === shift.requestFrom);
                                 const dateStr = new Date(shift.date).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' });
-                                
-                                const offerDateStr = shift.swapOfferDate 
-                                    ? new Date(shift.swapOfferDate).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' })
-                                    : "---";
-
+                                const offerDateStr = shift.swapOfferDate ? new Date(shift.swapOfferDate).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' }) : "---";
                                 return (
                                     <div key={shift.date} className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                                        <p className="text-sm text-slate-700 mb-2">
-                                            <span className="font-bold text-slate-900">{shift.requestFromName || 'Jemand'}</span> möchte deine Schicht am <span className="font-bold">{dateStr}</span> haben.
-                                        </p>
-                                        <p className="text-xs text-blue-600 font-bold mb-3 flex items-center gap-1">
-                                            <ArrowRightLeft className="w-3 h-3"/> Er bietet dafür: <span className="bg-blue-100 px-1 rounded">{offerDateStr}</span>
-                                        </p>
+                                        <p className="text-sm text-slate-700 mb-2"><span className="font-bold text-slate-900">{shift.requestFromName || 'Jemand'}</span> möchte deine Schicht am <span className="font-bold">{dateStr}</span> haben.</p>
+                                        <p className="text-xs text-blue-600 font-bold mb-3 flex items-center gap-1"><ArrowRightLeft className="w-3 h-3"/> Er bietet dafür: <span className="bg-blue-100 px-1 rounded">{offerDateStr}</span></p>
                                         <div className="flex gap-2">
                                             <button onClick={() => acceptRequest(shift)} className="flex-1 bg-green-500 hover:bg-green-600 text-white text-xs font-bold py-2 rounded shadow-sm">Tausch annehmen</button>
                                             <button onClick={() => declineRequest(shift)} className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-600 text-xs font-bold py-2 rounded">Ablehnen</button>
@@ -596,15 +649,15 @@
                             const isToday = formatDateId(new Date()) === dateId;
                             
                             return (
-                                <button key={item.id} onClick={() => handleDayClick(item.date)} className={`relative min-h-[80px] p-1 border-b border-r border-slate-100 text-left transition-colors ${isToday && !isHistoryMode ? 'bg-blue-50/50' : ''} ${isWeekend(item.date) ? 'bg-orange-50/30' : ''} hover:bg-slate-50 ${isHistoryMode ? 'cursor-cell' : ''}`}>
+                                <button key={item.id} onClick={() => handleDayClick(item.date)} className={`relative min-h-[80px] p-1 border-b border-r border-slate-100 text-left transition-colors ${isToday && !isAdmin ? 'bg-blue-50/50' : ''} ${isWeekend(item.date) ? 'bg-orange-50/30' : ''} hover:bg-slate-50 ${isAdmin ? 'cursor-cell' : ''}`}>
                                 <span className={`text-xs font-medium block mb-1 w-6 h-6 flex items-center justify-center rounded-full ${isToday ? 'bg-blue-600 text-white' : 'text-slate-400'} ${isWeekend(item.date) && !isToday ? 'text-orange-400' : ''}`}>{item.date.getDate()}</span>
                                 {shift ? (
                                     <div className={`text-xs p-1.5 rounded-md text-white font-medium shadow-sm relative overflow-hidden ${shift.chefColor}`}>
                                     {shift.requestFrom && (<div className="absolute right-0 top-0 w-2 h-2 bg-white rounded-full m-1 animate-pulse"></div>)}
-                                    {(!isHistoryMode && shift.chefId === activeChefId) ? 'Ich' : (shift.chefName.split(' ')[1] || shift.chefName)}
+                                    {(!isAdmin && shift.chefId === activeChefId) ? 'Ich' : (shift.chefName.split(' ')[1] || shift.chefName)}
                                     </div>
                                 ) : (
-                                    <div className="h-full w-full flex items-center justify-center opacity-0 hover:opacity-100"><span className="text-[10px] uppercase font-bold text-slate-300 tracking-tighter">{isHistoryMode ? 'Setzen' : '+ Übernehmen'}</span></div>
+                                    <div className="h-full w-full flex items-center justify-center opacity-0 hover:opacity-100"><span className="text-[10px] uppercase font-bold text-slate-300 tracking-tighter">{(isAdmin) ? 'Setzen' : '+ Übernehmen'}</span></div>
                                 )}
                                 {isWeekend(item.date) && !shift && (<div className="absolute bottom-1 right-1"><AlertCircle className="w-3 h-3 text-orange-200" /></div>)}
                                 </button>
@@ -614,7 +667,6 @@
                     </div>
                 </div>
 
-                {!isHistoryMode && (
                 <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                     <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
                         <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-blue-600" /><h2 className="font-bold text-slate-800">Team Aufgaben</h2></div>
@@ -638,8 +690,8 @@
                                 const assignedChef = activeChefs.find(c => c.id === task.assignedTo);
                                 const isMyTask = task.assignedTo === activeChefId;
                                 const isAll = task.assignedTo === 'all';
-                                const canComplete = isAll || isMyTask;
-                                const canDelete = isAll || isMyTask || task.createdBy === activeChefId;
+                                const canComplete = isAll || isMyTask || isAdmin;
+                                const canDelete = isAll || isMyTask || isAdmin || task.createdBy === activeChefId;
 
                                 return (
                                     <div key={task.id} className={`p-4 flex items-center gap-3 hover:bg-slate-50 transition-colors ${isMyTask ? 'bg-blue-50/30' : ''}`}>
@@ -654,7 +706,7 @@
                         )}
                     </div>
 
-                    {/* COMPLETED TASKS (Auto-Deleted > 3 Days) */}
+                    {/* COMPLETED TASKS */}
                     {sortedTasks.done.length > 0 && (
                         <div className="bg-slate-50 border-t border-slate-200">
                             <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider flex justify-between items-center">
@@ -676,56 +728,87 @@
                         </div>
                     )}
                 </section>
-                )}
               </main>
 
-              {isHistoryMode && (
-                  <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 shadow-2xl z-40 animate-in slide-in-from-bottom-10">
-                      <div className="max-w-md mx-auto flex flex-col gap-2">
-                          <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Eintrag für:</span>
-                          <div className="flex gap-2 overflow-x-auto pb-2">
+              {/* ADMIN SETTINGS MODAL */}
+                {showAdminSettings && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto">
+                            <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-slate-800">Einstellungen</h3><button onClick={() => setShowAdminSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button></div>
+                            
+                            <div className="mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1"><KeyRound className="w-3 h-3"/> Admin Master-PIN</h4>
+                                <input type="text" value={tempNames.admin_pin || ''} onChange={(e) => setTempNames(prev => ({...prev, admin_pin: e.target.value}))} placeholder={DEFAULT_ADMIN_PIN} className="w-full p-2 border border-slate-200 rounded-lg text-sm text-center tracking-widest font-mono focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </div>
+
+                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Benutzer verwalten</h4>
+                            <div className="space-y-3 mb-6">
+                                {CHEF_TEMPLATES.map(chef => (
+                                    <div key={chef.id} className="flex items-center gap-2">
+                                        <div className={`w-3 h-3 rounded-full ${chef.color} flex-shrink-0`}></div>
+                                        <input type="text" value={tempNames[chef.id] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id]: e.target.value}))} placeholder={chef.defaultName} className="flex-1 p-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
+                                        <input type="text" value={tempNames[chef.id + '_pin'] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id + '_pin']: e.target.value}))} placeholder="PIN" className="w-16 p-2 border border-slate-200 rounded-lg text-xs text-center focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                ))}
+                            </div>
+                            <button onClick={saveNames} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl flex items-center justify-center gap-2 mb-6"><Save className="w-4 h-4" /> Speichern</button>
+                        </div>
+                    </div>
+                )}
+
+              {/* ADMIN BOOKING MODAL (Select Chef) */}
+              {adminBookingModal && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
+                      <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6">
+                          <div className="flex justify-between items-center mb-4">
+                              <div><h3 className="text-lg font-bold text-slate-800">Schicht eintragen</h3><p className="text-xs text-slate-500">{adminBookingModal.dateString}</p></div>
+                              <button onClick={() => setAdminBookingModal(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+                          </div>
+                          <div className="grid grid-cols-1 gap-2">
                               {activeChefs.map(chef => (
-                                  <button key={chef.id} onClick={() => setHistoryTargetChefId(chef.id)} className={`flex items-center px-4 py-2 rounded-xl border-2 transition-all whitespace-nowrap ${historyTargetChefId === chef.id ? `bg-slate-800 text-white border-slate-800 shadow-lg scale-105` : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><div className={`w-2 h-2 rounded-full ${chef.color} mr-2`}></div><span className="text-sm font-bold">{chef.name}</span></button>
+                                  <button key={chef.id} onClick={() => adminAssignShift(chef.id)} className="flex items-center p-3 border border-slate-100 rounded-xl hover:bg-slate-50 transition-colors">
+                                      <div className={`w-3 h-3 rounded-full ${chef.color} mr-3`}></div><span className="font-medium text-slate-700">{chef.name}</span><Plus className="ml-auto w-4 h-4 text-slate-400" />
+                                  </button>
                               ))}
                           </div>
                       </div>
                   </div>
               )}
 
+              {/* SHIFT ACTION MODAL (User & Admin) */}
               {selectedShiftModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
                     <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95 duration-200">
                         <div className="flex flex-col items-center text-center gap-4">
-                            {selectedShiftModal.isMine ? (
+                            {/* ADMIN MODE ACTIONS */}
+                            {selectedShiftModal.isAdminAction ? (
                                 <>
-                                    <div className="p-3 bg-blue-100 rounded-full"><Settings className="w-8 h-8 text-blue-600" /></div>
-                                    <div><h3 className="text-lg font-bold text-slate-800">Deine Schicht verwalten</h3><p className="text-sm text-slate-500 mt-1">{selectedShiftModal.dateString}</p></div>
-                                    <button onClick={deleteShift} className="w-full py-3 px-4 bg-white border-2 border-red-100 text-red-600 hover:bg-red-50 hover:border-red-200 font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"><Trash2 className="w-4 h-4" /> Löschen</button>
+                                    <div className="p-3 bg-slate-800 rounded-full"><UserCog className="w-8 h-8 text-white" /></div>
+                                    <div><h3 className="text-lg font-bold text-slate-800">Schicht verwalten</h3><p className="text-sm text-slate-500 mt-1">{selectedShiftModal.shift.chefName} am {selectedShiftModal.dateString}</p></div>
+                                    <button onClick={deleteShift} className="w-full py-3 px-4 bg-white border-2 border-red-100 text-red-600 hover:bg-red-50 hover:border-red-200 font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"><Trash2 className="w-4 h-4" /> Schicht löschen</button>
                                 </>
                             ) : (
-                                <>
-                                    <div className="p-3 bg-orange-100 rounded-full"><ArrowRightLeft className="w-8 h-8 text-orange-600" /></div>
-                                    <div><h3 className="text-lg font-bold text-slate-800">Tausch vorschlagen</h3><p className="text-sm text-slate-500 mt-1">für {selectedShiftModal.shift.chefName} am {selectedShiftModal.dateString}</p></div>
-                                    
-                                    <div className="w-full text-left">
-                                        <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">Biete deine Schicht:</label>
-                                        <select 
-                                            value={swapOfferId} 
-                                            onChange={(e) => setSwapOfferId(e.target.value)} 
-                                            className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-blue-500 mb-4"
-                                        >
-                                            <option value="">-- Wähle eine Schicht --</option>
-                                            {myFutureShifts.map(s => (
-                                                <option key={s.date} value={s.date}>
-                                                    {new Date(s.date).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' })} 
-                                                    {s.isWeekend ? ' (Wochenende)' : ''}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <button onClick={sendSwapRequest} className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2">Tauschanfrage senden</button>
-                                </>
+                                /* USER MODE ACTIONS */
+                                selectedShiftModal.isMine ? (
+                                    <>
+                                        <div className="p-3 bg-blue-100 rounded-full"><Settings className="w-8 h-8 text-blue-600" /></div>
+                                        <div><h3 className="text-lg font-bold text-slate-800">Deine Schicht verwalten</h3><p className="text-sm text-slate-500 mt-1">{selectedShiftModal.dateString}</p></div>
+                                        <button onClick={deleteShift} className="w-full py-3 px-4 bg-white border-2 border-red-100 text-red-600 hover:bg-red-50 hover:border-red-200 font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"><Trash2 className="w-4 h-4" /> Löschen</button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div className="p-3 bg-orange-100 rounded-full"><ArrowRightLeft className="w-8 h-8 text-orange-600" /></div>
+                                        <div><h3 className="text-lg font-bold text-slate-800">Tausch vorschlagen</h3><p className="text-sm text-slate-500 mt-1">für {selectedShiftModal.shift.chefName} am {selectedShiftModal.dateString}</p></div>
+                                        <div className="w-full text-left">
+                                            <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">Biete deine Schicht:</label>
+                                            <select value={swapOfferId} onChange={(e) => setSwapOfferId(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-blue-500 mb-4">
+                                                <option value="">-- Wähle eine Schicht --</option>
+                                                {myFutureShifts.map(s => (<option key={s.date} value={s.date}>{new Date(s.date).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' })} {s.isWeekend ? ' (Wochenende)' : ''}</option>))}
+                                            </select>
+                                        </div>
+                                        <button onClick={sendSwapRequest} className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2">Tauschanfrage senden</button>
+                                    </>
+                                )
                             )}
                             <button onClick={() => setSelectedShiftModal(null)} className="text-slate-400 text-xs hover:text-slate-600 mt-2">Abbrechen</button>
                         </div>
