@@ -28,7 +28,14 @@
     <style>
         body { font-family: sans-serif; }
         .animate-pop { animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .animate-shake { animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both; }
         @keyframes popIn { from { transform: scale(0.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+        @keyframes shake { 
+            10%, 90% { transform: translate3d(-1px, 0, 0); } 
+            20%, 80% { transform: translate3d(2px, 0, 0); } 
+            30%, 50%, 70% { transform: translate3d(-4px, 0, 0); } 
+            40%, 60% { transform: translate3d(4px, 0, 0); } 
+        }
     </style>
 </head>
 <body class="bg-slate-100">
@@ -40,7 +47,7 @@
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
         import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc, updateDoc, getDoc, writeBatch } from 'firebase/firestore';
-        import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, RotateCcw, Send, BellRing, ArrowRightLeft, UserCog } from 'lucide-react';
+        import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, RotateCcw, Send, BellRing, ArrowRightLeft, UserCog, Delete } from 'lucide-react';
 
         // --- FIREBASE CONFIG ---
         const firebaseConfig = {
@@ -234,16 +241,37 @@
               }
           };
 
-          const submitUserPin = (e) => {
-              e.preventDefault();
+          // NUMPAD HANDLER
+          const handleNumPadInput = (digit) => {
               const chef = activeChefs.find(c => c.id === userLoginState.chefId);
-              if (chef && userLoginState.attempt === chef.pin) {
+              if (!chef) return;
+
+              const newAttempt = userLoginState.attempt + digit;
+              
+              // Case 1: Match -> Login
+              if (newAttempt === chef.pin) {
                   setActiveChefId(chef.id);
                   setIsAdmin(false);
                   setUserLoginState({ isOpen: false, chefId: null, attempt: '', error: false });
-              } else {
-                  setUserLoginState(prev => ({ ...prev, error: true, attempt: '' }));
+                  return;
               }
+
+              // Case 2: Wrong PIN but length reached -> Error
+              if (newAttempt.length >= chef.pin.length) {
+                  setUserLoginState(prev => ({ ...prev, attempt: newAttempt, error: true }));
+                  // Clear error after animation
+                  setTimeout(() => {
+                      setUserLoginState(prev => ({ ...prev, attempt: '', error: false }));
+                  }, 500);
+                  return;
+              }
+
+              // Case 3: Still typing
+              setUserLoginState(prev => ({ ...prev, attempt: newAttempt, error: false }));
+          };
+
+          const handleNumPadBackspace = () => {
+              setUserLoginState(prev => ({ ...prev, attempt: prev.attempt.slice(0, -1), error: false }));
           };
 
           // --- Calendar Interaction ---
@@ -519,21 +547,39 @@
                   </div>
                 </div>
 
-                {/* USER LOGIN PIN MODAL */}
+                {/* USER LOGIN PIN MODAL (NUMPAD) */}
                 {userLoginState.isOpen && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-                        <div className="bg-white rounded-2xl shadow-2xl max-w-xs w-full p-6">
+                        <div className={`bg-white rounded-2xl shadow-2xl max-w-xs w-full p-6 ${userLoginState.error ? 'animate-shake' : ''}`}>
                             <div className="flex justify-between items-center mb-6">
                                 <h3 className="text-lg font-bold text-slate-800">Login: {activeChefs.find(c => c.id === userLoginState.chefId)?.name}</h3>
                                 <button onClick={() => setUserLoginState({isOpen:false, chefId:null, attempt:'', error:false})} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
                             </div>
-                            <form onSubmit={submitUserPin}>
-                                <div className="mb-4">
-                                    <input type="password" inputMode="numeric" autoFocus value={userLoginState.attempt} onChange={(e) => setUserLoginState(prev => ({...prev, attempt: e.target.value, error: false}))} placeholder="PIN eingeben" className={`w-full p-3 text-center text-lg tracking-widest border-2 rounded-xl outline-none transition-colors ${userLoginState.error ? 'border-red-500 bg-red-50' : 'border-slate-200 focus:border-blue-500'}`} />
-                                    {userLoginState.error && <p className="text-red-500 text-xs mt-2 text-center font-medium">Falscher Code</p>}
-                                </div>
-                                <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">Anmelden</button>
-                            </form>
+                            
+                            {/* Display Dots */}
+                            <div className="flex justify-center gap-2 mb-6 h-8">
+                                {[...Array(4)].map((_, i) => (
+                                    <div key={i} className={`w-4 h-4 rounded-full transition-colors ${i < userLoginState.attempt.length ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
+                                ))}
+                            </div>
+
+                            {/* Numpad */}
+                            <div className="grid grid-cols-3 gap-3">
+                                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+                                    <button 
+                                        key={num} 
+                                        onClick={() => handleNumPadInput(num.toString())}
+                                        className="h-14 rounded-xl bg-slate-50 text-slate-700 font-bold text-xl hover:bg-slate-100 active:bg-slate-200 transition-colors"
+                                    >
+                                        {num}
+                                    </button>
+                                ))}
+                                <div className="col-span-1"></div> {/* Spacer */}
+                                <button onClick={() => handleNumPadInput('0')} className="h-14 rounded-xl bg-slate-50 text-slate-700 font-bold text-xl hover:bg-slate-100 active:bg-slate-200 transition-colors">0</button>
+                                <button onClick={handleNumPadBackspace} className="h-14 rounded-xl bg-slate-50 text-slate-500 hover:bg-slate-100 active:bg-slate-200 transition-colors flex items-center justify-center">
+                                    <Delete className="w-6 h-6" />
+                                </button>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -547,6 +593,32 @@
                                 <div className="mb-4"><input type="password" inputMode="numeric" autoFocus value={pinInput} onChange={(e) => {setPinInput(e.target.value); setPinError(false);}} placeholder="PIN eingeben" className={`w-full p-3 text-center text-lg tracking-widest border-2 rounded-xl outline-none transition-colors ${pinError ? 'border-red-500 bg-red-50' : 'border-slate-200 focus:border-blue-500'}`} />{pinError && <p className="text-red-500 text-xs mt-2 text-center font-medium">Falscher Code</p>}</div>
                                 <button type="submit" className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">Entsperren</button>
                             </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* ADMIN SETTINGS MODAL */}
+                {showAdminSettings && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto">
+                            <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-slate-800">Einstellungen</h3><button onClick={() => setShowAdminSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button></div>
+                            
+                            <div className="mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1"><KeyRound className="w-3 h-3"/> Admin Master-PIN</h4>
+                                <input type="text" value={tempNames.admin_pin || ''} onChange={(e) => setTempNames(prev => ({...prev, admin_pin: e.target.value}))} placeholder={DEFAULT_ADMIN_PIN} className="w-full p-2 border border-slate-200 rounded-lg text-sm text-center tracking-widest font-mono focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </div>
+
+                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Benutzer verwalten</h4>
+                            <div className="space-y-3 mb-6">
+                                {CHEF_TEMPLATES.map(chef => (
+                                    <div key={chef.id} className="flex items-center gap-2">
+                                        <div className={`w-3 h-3 rounded-full ${chef.color} flex-shrink-0`}></div>
+                                        <input type="text" value={tempNames[chef.id] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id]: e.target.value}))} placeholder={chef.defaultName} className="flex-1 p-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
+                                        <input type="text" value={tempNames[chef.id + '_pin'] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id + '_pin']: e.target.value}))} placeholder="PIN" className="w-16 p-2 border border-slate-200 rounded-lg text-xs text-center focus:ring-2 focus:ring-blue-500 outline-none" />
+                                    </div>
+                                ))}
+                            </div>
+                            <button onClick={saveNames} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl flex items-center justify-center gap-2 mb-6"><Save className="w-4 h-4" /> Speichern</button>
                         </div>
                     </div>
                 )}
