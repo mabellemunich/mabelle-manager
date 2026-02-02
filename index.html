@@ -22,8 +22,8 @@
     }
     </script>
     
-    <!-- Babel für JSX -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Babel für JSX - Version fixiert auf 7.23.8 um Fehler zu vermeiden -->
+    <script src="https://unpkg.com/@babel/standalone@7.23.8/babel.min.js"></script>
 
     <style>
         body { font-family: sans-serif; }
@@ -41,7 +41,7 @@
 <body class="bg-slate-100">
     <div id="root"></div>
 
-    <script type="text/babel" data-type="module">
+    <script type="text/babel" data-type="module" data-presets="react">
         import React, { useState, useEffect, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
         import { initializeApp } from 'firebase/app';
