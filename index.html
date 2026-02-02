@@ -22,7 +22,7 @@
     }
     </script>
     
-    <!-- Babel für JSX - Version fixiert auf 7.23.8 um Fehler zu vermeiden -->
+    <!-- Babel für JSX -->
     <script src="https://unpkg.com/@babel/standalone@7.23.8/babel.min.js"></script>
 
     <style>
@@ -47,7 +47,7 @@
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
         import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc, updateDoc, getDoc, writeBatch } from 'firebase/firestore';
-        import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, RotateCcw, Send, BellRing, ArrowRightLeft, UserCog, Delete } from 'lucide-react';
+        import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, RotateCcw, Send, BellRing, ArrowRightLeft, UserCog, Delete, AlertTriangle } from 'lucide-react';
 
         // --- FIREBASE CONFIG ---
         const firebaseConfig = {
@@ -110,6 +110,9 @@
 
           // User Login PIN State
           const [userLoginState, setUserLoginState] = useState({ isOpen: false, chefId: null, attempt: '', error: false });
+
+          // Reminder Popup State
+          const [showTaskReminder, setShowTaskReminder] = useState(false);
 
           // Admin Modals
           const [selectedShiftModal, setSelectedShiftModal] = useState(null); 
@@ -190,6 +193,13 @@
               }));
           }, [customNames]);
 
+          // Filter tasks for reminder popup
+          const myOpenTasksForReminder = useMemo(() => {
+             if (!activeChefId || isAdmin) return [];
+             // Show tasks assigned to ME or ALL, that are NOT completed
+             return tasks.filter(t => !t.completed && (t.assignedTo === activeChefId || t.assignedTo === 'all'));
+          }, [tasks, activeChefId, isAdmin]);
+
           const myFutureShifts = useMemo(() => {
               if (!activeChefId || !shifts) return [];
               const today = new Date();
@@ -238,6 +248,7 @@
               } else {
                   setActiveChefId(chef.id);
                   setIsAdmin(false);
+                  setShowTaskReminder(true); // Trigger Reminder on direct login
               }
           };
 
@@ -253,6 +264,7 @@
                   setActiveChefId(chef.id);
                   setIsAdmin(false);
                   setUserLoginState({ isOpen: false, chefId: null, attempt: '', error: false });
+                  setShowTaskReminder(true); // Trigger Reminder on PIN login
                   return;
               }
 
@@ -648,6 +660,39 @@
 
               <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
                 
+                {/* --- TASK REMINDER MODAL --- */}
+                {showTaskReminder && myOpenTasksForReminder.length > 0 && (
+                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-in fade-in duration-300">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95">
+                            <div className="flex flex-col items-center text-center gap-4">
+                                <div className="p-3 bg-blue-100 rounded-full animate-bounce">
+                                    <BellRing className="w-8 h-8 text-blue-600" />
+                                </div>
+                                <div>
+                                    <h3 className="text-xl font-black text-slate-800">Wichtige Aufgaben!</h3>
+                                    <p className="text-sm text-slate-500 mt-2">Du hast {myOpenTasksForReminder.length} offene Aufgaben.</p>
+                                </div>
+                                
+                                <div className="w-full bg-slate-50 rounded-xl p-3 max-h-48 overflow-y-auto text-left space-y-2 border border-slate-100">
+                                    {myOpenTasksForReminder.map(task => (
+                                        <div key={task.id} className="flex gap-2 items-start text-sm">
+                                            <span className="text-blue-500 mt-0.5">•</span>
+                                            <span className="text-slate-700 font-medium">{task.text}</span>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <button 
+                                    onClick={() => setShowTaskReminder(false)}
+                                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-blue-200"
+                                >
+                                    Verstanden & Gelesen
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* --- NOTIFICATIONS --- */}
                 {showNotifications && !isAdmin && (
                     <div className="bg-white border-l-4 border-blue-500 rounded-lg shadow-md p-4 mb-4 animate-pop">
