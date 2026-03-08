@@ -98,6 +98,7 @@
           const [shifts, setShifts] = useState({});
           const [tasks, setTasks] = useState([]); 
           const [loading, setLoading] = useState(true);
+          const [settingsLoaded, setSettingsLoaded] = useState(false); // NEUER STATE: Wartet auf Namens-Download
           const [statsFilter, setStatsFilter] = useState('month'); 
           
           const [customNames, setCustomNames] = useState({});
@@ -150,6 +151,7 @@
 
             const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general'), (docSnap) => {
                 if (docSnap.exists()) setCustomNames(docSnap.data());
+                setSettingsLoaded(true); // BESTÄTIGUNG: Namen sind geladen
             });
 
             return () => { unsubShifts(); unsubTasks(); unsubSettings(); };
@@ -538,7 +540,8 @@
           const calendarDays = getCalendarDays();
 
           // --- Render ---
-          if (!user) return <div className="min-h-screen flex items-center justify-center text-slate-500">Lade Anwendung...</div>;
+          // NEU: Zeigt den Ladebildschirm so lange an, bis der Benutzer angemeldet UND die Namen geladen sind
+          if (!user || !settingsLoaded) return <div className="min-h-screen flex items-center justify-center text-slate-500">Lade Anwendung...</div>;
 
           if (!activeChefId && !isAdmin) {
             return (
