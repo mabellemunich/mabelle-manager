@@ -1,946 +1,966 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MABELLEManager</title>
-    
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Import Map: Offizielle Google-Server -->
-    <script type="importmap">
-    {
-      "imports": {
-        "react": "https://esm.sh/react@18.2.0",
-        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-        "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
-        "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
-        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js",
-        "lucide-react": "https://esm.sh/lucide-react@0.344.0"
-      }
-    }
-    </script>
-    
-    <!-- Babel für JSX -->
-    <script src="https://unpkg.com/@babel/standalone@7.23.8/babel.min.js"></script>
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc, updateDoc } from 'firebase/firestore';
+import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, MessageSquare, ChevronDown, ChevronUp, Send } from 'lucide-react';
 
-    <style>
-        body { font-family: sans-serif; }
-        .animate-pop { animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
-        .animate-shake { animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both; }
-        @keyframes popIn { from { transform: scale(0.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-        @keyframes shake { 
-            10%, 90% { transform: translate3d(-1px, 0, 0); } 
-            20%, 80% { transform: translate3d(2px, 0, 0); } 
-            30%, 50%, 70% { transform: translate3d(-4px, 0, 0); } 
-            40%, 60% { transform: translate3d(4px, 0, 0); } 
+// --- Firebase Configuration ---
+const firebaseConfig = {
+  apiKey: "AIzaSyA-1RMjw-kYkhEAWbCIahje0JoZQPeCsT4",
+  authDomain: "mabelle2-8b6c2.firebaseapp.com",
+  projectId: "mabelle2-8b6c2",
+  storageBucket: "mabelle2-8b6c2.firebasestorage.app",
+  messagingSenderId: "718760578004",
+  appId: "1:718760578004:web:cb4709e210c4849f33e441"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = "shop-manager-v1";
+
+// --- Constants & Helpers ---
+// Template for Chefs (Colors & IDs remain constant, Names become dynamic)
+const CHEF_TEMPLATES = [
+  { id: 'chef1', defaultName: 'Chef Alex', color: 'bg-blue-500', border: 'border-blue-500', text: 'text-blue-600', bgLight: 'bg-blue-50' },
+  { id: 'chef2', defaultName: 'Chef Sarah', color: 'bg-emerald-500', border: 'border-emerald-500', text: 'text-emerald-600', bgLight: 'bg-emerald-50' },
+  { id: 'chef3', defaultName: 'Chef Michael', color: 'bg-amber-500', border: 'border-amber-500', text: 'text-amber-600', bgLight: 'bg-amber-50' },
+  { id: 'chef4', defaultName: 'Chef Laura', color: 'bg-purple-500', border: 'border-purple-500', text: 'text-purple-600', bgLight: 'bg-purple-50' }
+];
+
+const DAYS_DE = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+const MONTHS_DE = [
+  'Januar', 'Februar', 'März', 'April', 'Mai', 'Juni',
+  'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'
+];
+
+const ADMIN_PIN = "0303";
+
+// Helper to get ISO date string (YYYY-MM-DD) to use as ID
+const formatDateId = (date) => {
+  const year = date.getFullYear();
+  const month =String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const isWeekend = (date) => {
+  const day = date.getDay();
+  return day === 5 || day === 6; // 5 = Friday, 6 = Saturday
+};
+
+// --- Main Component ---
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [activeChefId, setActiveChefId] = useState(null); // The "logged in" chef
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [shifts, setShifts] = useState({});
+  const [tasks, setTasks] = useState([]); 
+  const [loading, setLoading] = useState(true);
+  const [statsFilter, setStatsFilter] = useState('month'); 
+  
+  // Custom Names State
+  const [customNames, setCustomNames] = useState({});
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [tempNames, setTempNames] = useState({}); // For the edit form
+
+  // PIN / Security State
+  const [showPinEntry, setShowPinEntry] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(false);
+
+  // History Mode State
+  const [isHistoryMode, setIsHistoryMode] = useState(false);
+  const [historyTargetChefId, setHistoryTargetChefId] = useState(CHEF_TEMPLATES[0].id);
+
+  // State for the custom delete modal
+  const [deleteModal, setDeleteModal] = useState(null); 
+
+  // New Task Form State
+  const [newTaskText, setNewTaskText] = useState('');
+  const [newTaskAssignee, setNewTaskAssignee] = useState('all');
+
+  // Comments / Expanded Task State
+  const [expandedTaskId, setExpandedTaskId] = useState(null);
+  const [newComments, setNewComments] = useState({});
+
+  // 1. Initialize Auth
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (customTokenError) {
+            console.warn("Token-Konflikt (eigene Firebase-Datenbank genutzt). Wechsle zu anonymer Anmeldung.", customTokenError);
+            await signInAnonymously(auth);
+          }
+        } else {
+          await signInAnonymously(auth);
         }
-    </style>
-</head>
-<body class="bg-slate-100">
-    <div id="root"></div>
+      } catch (error) {
+        console.error("Authentifizierungsfehler:", error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
 
-    <script type="text/babel" data-type="module" data-presets="react">
-        import React, { useState, useEffect, useMemo } from 'react';
-        import { createRoot } from 'react-dom/client';
-        import { initializeApp } from 'firebase/app';
-        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc, updateDoc, getDoc, writeBatch } from 'firebase/firestore';
-        import { Users, Calendar as CalendarIcon, BarChart3, ChevronLeft, ChevronRight, AlertCircle, ShieldCheck, History, CalendarDays, Trash2, CheckCircle2, Plus, X, Check, Lock, Settings, Save, Edit3, KeyRound, RotateCcw, Send, BellRing, ArrowRightLeft, UserCog, Delete, AlertTriangle } from 'lucide-react';
+  // 2. Fetch Data
+  useEffect(() => {
+    if (!user) return;
+    
+    // Shifts Listener
+    const shiftsRef = collection(db, 'artifacts', appId, 'public', 'data', 'shifts');
+    const unsubShifts = onSnapshot(shiftsRef, (snapshot) => {
+      const data = {};
+      snapshot.forEach(doc => {
+        data[doc.id] = doc.data();
+      });
+      setShifts(data);
+      setLoading(false);
+    }, (error) => console.error("Error fetching shifts:", error));
 
-        // --- FIREBASE CONFIG ---
-        const firebaseConfig = {
-          apiKey: "AIzaSyA-1RMjw-kYkhEAWbCIahje0JoZQPeCsT4",
-          authDomain: "mabelle2-8b6c2.firebaseapp.com",
-          projectId: "mabelle2-8b6c2",
-          storageBucket: "mabelle2-8b6c2.firebasestorage.app",
-          messagingSenderId: "718760578004",
-          appId: "1:718760578004:web:cb4709e210c4849f33e441"
-        };
+    // Tasks Listener
+    const tasksRef = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+    const unsubTasks = onSnapshot(tasksRef, (snapshot) => {
+        const data = [];
+        snapshot.forEach(doc => data.push({id: doc.id, ...doc.data()}));
+        setTasks(data);
+    }, (error) => console.error("Error fetching tasks:", error));
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = "shop-manager-v1";
+    // Settings (Names) Listener
+    const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general');
+    const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
+        if (docSnap.exists()) {
+            setCustomNames(docSnap.data());
+        }
+    });
 
-        // --- CHEF TEMPLATES ---
-        const CHEF_TEMPLATES = [
-          { id: 'chef1', defaultName: 'Chef Alex', color: 'bg-blue-500', border: 'border-blue-500', text: 'text-blue-600', bgLight: 'bg-blue-50' }, 
-          { id: 'chef2', defaultName: 'Chef Sarah', color: 'bg-red-900', border: 'border-red-900', text: 'text-red-950', bgLight: 'bg-red-50' }, 
-          { id: 'chef3', defaultName: 'Chef Michael', color: 'bg-orange-600', border: 'border-orange-600', text: 'text-orange-700', bgLight: 'bg-orange-50' }, 
-          { id: 'chef4', defaultName: 'Chef Laura', color: 'bg-emerald-600', border: 'border-emerald-600', text: 'text-emerald-700', bgLight: 'bg-emerald-50' } 
-        ];
+    return () => {
+        unsubShifts();
+        unsubTasks();
+        unsubSettings();
+    };
+  }, [user]);
 
-        const DAYS_DE = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
-        const MONTHS_DE = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
-        const DEFAULT_ADMIN_PIN = "0303";
+  // --- Derived State: Active Chefs with Custom Names ---
+  const activeChefs = useMemo(() => {
+      return CHEF_TEMPLATES.map(t => ({
+          ...t,
+          name: customNames[t.id] || t.defaultName
+      }));
+  }, [customNames]);
 
-        const formatDateId = (date) => {
-          const year = date.getFullYear();
-          const month =String(date.getMonth() + 1).padStart(2, '0');
-          const day = String(date.getDate()).padStart(2, '0');
-          return `${year}-${month}-${day}`;
-        };
+  // --- Logic: Admin / Settings ---
+  
+  const handlePinSubmit = (e) => {
+      e.preventDefault();
+      if (pinInput === ADMIN_PIN) {
+          setPinInput('');
+          setPinError(false);
+          setShowPinEntry(false);
+          openAdmin();
+      } else {
+          setPinError(true);
+          setPinInput('');
+      }
+  };
 
-        const isWeekend = (date) => {
-          const day = date.getDay();
-          return day === 5 || day === 6; 
-        };
+  const openAdmin = () => {
+      const current = {};
+      CHEF_TEMPLATES.forEach(c => {
+          current[c.id] = customNames[c.id] || c.defaultName;
+      });
+      setTempNames(current);
+      setShowAdmin(true);
+  };
 
-        // --- Main Component ---
-        function App() {
-          const [user, setUser] = useState(null);
-          const [activeChefId, setActiveChefId] = useState(null); 
-          const [isAdmin, setIsAdmin] = useState(false); 
+  const saveNames = async () => {
+      try {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general'), tempNames, { merge: true });
+          setShowAdmin(false);
+      } catch (error) {
+          console.error("Error saving names:", error);
+          alert("Fehler beim Speichern.");
+      }
+  };
 
-          const [currentDate, setCurrentDate] = useState(new Date());
-          const [shifts, setShifts] = useState({});
-          const [tasks, setTasks] = useState([]); 
-          const [loading, setLoading] = useState(true);
-          const [settingsLoaded, setSettingsLoaded] = useState(false); // NEUER STATE: Wartet auf Namens-Download
-          const [statsFilter, setStatsFilter] = useState('month'); 
-          
-          const [customNames, setCustomNames] = useState({});
-          const [showAdminSettings, setShowAdminSettings] = useState(false); 
-          const [tempNames, setTempNames] = useState({}); 
+  const startHistoryMode = () => {
+      setIsHistoryMode(true);
+      setShowAdmin(false);
+      setHistoryTargetChefId(activeChefId || CHEF_TEMPLATES[0].id);
+  };
 
-          const [showPinEntry, setShowPinEntry] = useState(false);
-          const [pinInput, setPinInput] = useState('');
-          const [pinError, setPinError] = useState(false);
 
-          // User Login PIN State
-          const [userLoginState, setUserLoginState] = useState({ isOpen: false, chefId: null, attempt: '', error: false });
+  // --- Logic: Calendar ---
 
-          // Reminder Popup State
-          const [showTaskReminder, setShowTaskReminder] = useState(false);
+  const handleDayClick = async (dayDate) => {
+    if (isHistoryMode) {
+        const dateId = formatDateId(dayDate);
+        const targetChef = activeChefs.find(c => c.id === historyTargetChefId);
+        const existingShift = shifts[dateId];
 
-          // Admin Modals
-          const [selectedShiftModal, setSelectedShiftModal] = useState(null); 
-          const [adminBookingModal, setAdminBookingModal] = useState(null);
-
-          const [notifications, setNotifications] = useState([]); 
-          const [showNotifications, setShowNotifications] = useState(false);
-          
-          const [swapOfferId, setSwapOfferId] = useState(''); 
-
-          const [newTaskText, setNewTaskText] = useState('');
-          const [newTaskAssignee, setNewTaskAssignee] = useState('all');
-
-          // Auth
-          useEffect(() => {
-            signInAnonymously(auth).catch((error) => alert("Auth Error: " + error.message));
-            return onAuthStateChanged(auth, setUser);
-          }, []);
-
-          // Data Sync
-          useEffect(() => {
-            if (!user) return;
-            
-            const unsubShifts = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'shifts'), (snapshot) => {
-              const data = {};
-              snapshot.forEach(doc => data[doc.id] = doc.data());
-              setShifts(data);
+        if (existingShift && existingShift.chefId === historyTargetChefId) {
+             await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', dateId));
+        } else {
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', dateId), {
+                date: dateId,
+                chefId: targetChef.id,
+                chefName: targetChef.name,
+                chefColor: targetChef.color,
+                isWeekend: isWeekend(dayDate),
+                timestamp: new Date().toISOString()
             });
+        }
+        return; 
+    }
 
-            const unsubTasks = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'tasks'), (snapshot) => {
-                const data = [];
-                snapshot.forEach(doc => data.push({id: doc.id, ...doc.data()}));
-                setTasks(data);
-            });
+    // Normal Mode
+    if (!activeChefId) return;
 
-            const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general'), (docSnap) => {
-                if (docSnap.exists()) setCustomNames(docSnap.data());
-                setSettingsLoaded(true); // BESTÄTIGUNG: Namen sind geladen
-            });
+    const dateId = formatDateId(dayDate);
+    const existingShift = shifts[dateId];
+    const chef = activeChefs.find(c => c.id === activeChefId);
 
-            return () => { unsubShifts(); unsubTasks(); unsubSettings(); };
-          }, [user]);
+    if (existingShift) {
+      if (existingShift.chefId === activeChefId) {
+        setDeleteModal({
+          dateId: dateId,
+          dateString: dayDate.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })
+        });
+      } else {
+        alert(`Dieser Tag ist bereits von ${existingShift.chefName} belegt.`);
+      }
+    } else {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', dateId), {
+        date: dateId,
+        chefId: chef.id,
+        chefName: chef.name, 
+        chefColor: chef.color,
+        isWeekend: isWeekend(dayDate),
+        timestamp: new Date().toISOString()
+      });
+    }
+  };
 
-          // Auto-Delete Tasks
-          useEffect(() => {
-              if (tasks.length === 0) return;
-              const now = new Date();
-              tasks.forEach(task => {
-                  if (task.completed && task.completedAt) {
-                      const completedDate = new Date(task.completedAt);
-                      const diffTime = Math.abs(now - completedDate);
-                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-                      if (diffDays > 3) {
-                          deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', task.id))
-                            .catch(e => console.error("Auto-Delete failed", e));
-                      }
-                  }
-              });
-          }, [tasks]);
+  const performDelete = async () => {
+    if (!deleteModal) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', deleteModal.dateId));
+    } catch (e) {
+      console.error("Error removing shift", e);
+    }
+    setDeleteModal(null);
+  };
 
-          // Notifications
-          useEffect(() => {
-              if (!activeChefId || !shifts) return;
-              const myNotifications = Object.values(shifts).filter(shift => 
-                  shift.chefId === activeChefId && shift.requestFrom
-              );
-              setNotifications(myNotifications);
-              if (myNotifications.length > 0) {
-                  setShowNotifications(true);
-              }
-          }, [shifts, activeChefId]);
+  const changeMonth = (offset) => {
+    const newDate = new Date(currentDate.setMonth(currentDate.getMonth() + offset));
+    setCurrentDate(new Date(newDate));
+  };
 
-          // Helpers
-          const activeChefs = useMemo(() => {
-              return CHEF_TEMPLATES.map(t => ({
-                  ...t,
-                  name: customNames[t.id] || t.defaultName,
-                  pin: customNames[t.id + '_pin'] || '' 
-              }));
-          }, [customNames]);
+  // --- Logic: Tasks & Comments ---
+  const handleAddTask = async (e) => {
+    e.preventDefault();
+    if (!newTaskText.trim()) return;
 
-          // Filter tasks for reminder popup
-          const myOpenTasksForReminder = useMemo(() => {
-             if (!activeChefId || isAdmin) return [];
-             // Show tasks assigned to ME or ALL, that are NOT completed
-             return tasks.filter(t => !t.completed && (t.assignedTo === activeChefId || t.assignedTo === 'all'));
-          }, [tasks, activeChefId, isAdmin]);
+    try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tasks'), {
+            text: newTaskText.trim(),
+            assignedTo: newTaskAssignee, // 'all', 'shift_today', or chefId
+            createdBy: activeChefId,
+            createdAt: new Date().toISOString(),
+            completed: false,
+            comments: [] // Initialize empty comments array
+        });
+        setNewTaskText('');
+    } catch (error) {
+        console.error("Error adding task:", error);
+    }
+  };
 
-          const myFutureShifts = useMemo(() => {
-              if (!activeChefId || !shifts) return [];
-              const today = new Date();
-              today.setHours(0,0,0,0);
-              return Object.values(shifts)
-                  .filter(s => s.chefId === activeChefId && new Date(s.date) >= today)
-                  .sort((a, b) => new Date(a.date) - new Date(b.date));
-          }, [shifts, activeChefId]);
+  const toggleTask = async (task) => {
+      try {
+          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', task.id);
+          await updateDoc(taskRef, {
+              completed: !task.completed,
+              completedAt: !task.completed ? new Date().toISOString() : null,
+              completedBy: !task.completed ? activeChefId : null
+          });
+      } catch (error) {
+          console.error("Error toggling task:", error);
+      }
+  };
 
-          // Admin Login Handlers
-          const handlePinSubmit = (e) => {
-              e.preventDefault();
-              const currentAdminPin = customNames.admin_pin || DEFAULT_ADMIN_PIN;
-              
-              if (pinInput === currentAdminPin) {
-                  setPinInput('');
-                  setPinError(false);
-                  setShowPinEntry(false);
-                  setIsAdmin(true); 
-              } else {
-                  setPinError(true);
-                  setPinInput('');
-              }
-          };
+  const deleteTask = async (taskId) => {
+      if(confirm('Aufgabe wirklich löschen?')) {
+        try {
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', taskId));
+        } catch (error) {
+            console.error("Error deleting task:", error);
+        }
+      }
+  };
 
-          const openAdminSettings = () => {
-              const current = {};
-              CHEF_TEMPLATES.forEach(c => { 
-                  current[c.id] = customNames[c.id] || c.defaultName; 
-                  current[c.id + '_pin'] = customNames[c.id + '_pin'] || '';
-              });
-              current.admin_pin = customNames.admin_pin || DEFAULT_ADMIN_PIN;
-              setTempNames(current);
-              setShowAdminSettings(true);
-          };
+  const handleAddComment = async (e, taskId) => {
+      e.preventDefault();
+      const text = newComments[taskId];
+      if (!text || !text.trim()) return;
 
-          const saveNames = async () => {
-              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'general'), tempNames, { merge: true });
-              setShowAdminSettings(false);
-          };
+      const me = activeChefs.find(c => c.id === activeChefId);
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) return;
 
-          // User Login Logic
-          const handleChefLoginClick = (chef) => {
-              if (chef.pin && chef.pin.trim() !== '') {
-                  setUserLoginState({ isOpen: true, chefId: chef.id, attempt: '', error: false });
-              } else {
-                  setActiveChefId(chef.id);
-                  setIsAdmin(false);
-                  setShowTaskReminder(true); // Trigger Reminder on direct login
-              }
-          };
+      const newComment = {
+          id: Date.now().toString(),
+          text: text.trim(),
+          authorName: me ? me.name : 'Admin',
+          timestamp: new Date().toISOString()
+      };
 
-          // NUMPAD HANDLER
-          const handleNumPadInput = (digit) => {
-              const chef = activeChefs.find(c => c.id === userLoginState.chefId);
-              if (!chef) return;
+      try {
+          const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', taskId);
+          await updateDoc(taskRef, {
+              comments: [...(task.comments || []), newComment]
+          });
+          setNewComments(prev => ({ ...prev, [taskId]: '' }));
+      } catch (error) {
+          console.error("Error adding comment:", error);
+      }
+  };
 
-              const newAttempt = userLoginState.attempt + digit;
-              
-              // Case 1: Match -> Login
-              if (newAttempt === chef.pin) {
-                  setActiveChefId(chef.id);
-                  setIsAdmin(false);
-                  setUserLoginState({ isOpen: false, chefId: null, attempt: '', error: false });
-                  setShowTaskReminder(true); // Trigger Reminder on PIN login
-                  return;
-              }
 
-              // Case 2: Wrong PIN but length reached -> Error
-              if (newAttempt.length >= chef.pin.length) {
-                  setUserLoginState(prev => ({ ...prev, attempt: newAttempt, error: true }));
-                  // Clear error after animation
-                  setTimeout(() => {
-                      setUserLoginState(prev => ({ ...prev, attempt: '', error: false }));
-                  }, 500);
-                  return;
-              }
+  // --- Statistics Calculation ---
+  const stats = useMemo(() => {
+    const initialStats = activeChefs.reduce((acc, chef) => {
+      acc[chef.id] = { ...chef, total: 0, weekend: 0 };
+      return acc;
+    }, {});
 
-              // Case 3: Still typing
-              setUserLoginState(prev => ({ ...prev, attempt: newAttempt, error: false }));
-          };
+    const viewYear = currentDate.getFullYear();
+    const viewMonth = currentDate.getMonth();
+    const now = new Date();
 
-          const handleNumPadBackspace = () => {
-              setUserLoginState(prev => ({ ...prev, attempt: prev.attempt.slice(0, -1), error: false }));
-          };
+    Object.values(shifts).forEach(shift => {
+      if (!initialStats[shift.chefId]) return;
 
-          // --- Calendar Interaction ---
-          const handleDayClick = async (dayDate) => {
-            const dateId = formatDateId(dayDate);
-            const existingShift = shifts[dateId];
-            const dateString = dayDate.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+      const shiftDate = new Date(shift.date);
+      let shouldCount = false;
 
-            // ADMIN MODE INTERACTION
-            if (isAdmin) {
-                if (existingShift) {
-                    setSelectedShiftModal({
-                        shift: existingShift,
-                        dateString: dateString,
-                        isAdminAction: true
-                    });
-                } else {
-                    setAdminBookingModal({
-                        dateId: dateId,
-                        dateString: dateString,
-                        isWeekend: isWeekend(dayDate)
-                    });
-                }
-                return;
-            }
+      if (statsFilter === 'month') {
+        shouldCount = shiftDate.getFullYear() === viewYear && shiftDate.getMonth() === viewMonth;
+      } else if (statsFilter === '3months') {
+        const diffTime = Math.abs(now - shiftDate);
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+        shouldCount = diffDays <= 90;
+      } else if (statsFilter === 'year') {
+        shouldCount = shiftDate.getFullYear() === viewYear;
+      }
 
-            // USER MODE INTERACTION
-            if (!activeChefId) return;
-            const chef = activeChefs.find(c => c.id === activeChefId);
+      if (shouldCount) {
+         initialStats[shift.chefId].total += 1;
+         if (shift.isWeekend) {
+           initialStats[shift.chefId].weekend += 1;
+         }
+      }
+    });
 
-            if (existingShift) {
-                setSelectedShiftModal({
-                    shift: existingShift,
-                    dateString: dateString,
-                    isMine: existingShift.chefId === activeChefId,
-                    isAdminAction: false
-                });
-                setSwapOfferId(''); 
-            } else {
-                const today = new Date();
-                today.setHours(0,0,0,0);
-                const maxBookingDate = new Date(today);
-                maxBookingDate.setDate(today.getDate() + 14); 
+    return Object.values(initialStats).sort((a, b) => b.total - a.total);
+  }, [shifts, currentDate, statsFilter, activeChefs]);
 
-                if (dayDate > maxBookingDate) {
-                    alert("Du kannst dich maximal 2 Wochen im Voraus eintragen.");
-                    return;
-                }
+  const getStatsLabel = () => {
+    if (statsFilter === 'month') return MONTHS_DE[currentDate.getMonth()];
+    if (statsFilter === '3months') return 'Letzte 90 Tage';
+    if (statsFilter === 'year') return `Jahr ${currentDate.getFullYear()}`;
+    return '';
+  };
 
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', dateId), {
-                    date: dateId,
-                    chefId: chef.id,
-                    chefName: chef.name, 
-                    chefColor: chef.color,
-                    isWeekend: isWeekend(dayDate),
-                    timestamp: new Date().toISOString(),
-                    requestFrom: null,
-                    swapOfferDate: null
-                });
-            }
-          };
+  // --- Task Filtering ---
+  const sortedTasks = useMemo(() => {
+    const todayId = formatDateId(new Date());
+    const iHaveShiftToday = shifts[todayId]?.chefId === activeChefId;
 
-          // --- Shift Actions ---
-          const deleteShift = async () => {
-            if (!selectedShiftModal) return;
-            try {
-              await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', selectedShiftModal.shift.date));
-            } catch (e) { console.error(e); }
-            setSelectedShiftModal(null);
-          };
+    const open = tasks.filter(t => !t.completed).sort((a, b) => {
+        const isMyTaskA = a.assignedTo === activeChefId || (a.assignedTo === 'shift_today' && iHaveShiftToday);
+        const isMyTaskB = b.assignedTo === activeChefId || (b.assignedTo === 'shift_today' && iHaveShiftToday);
+        
+        if (isMyTaskA && !isMyTaskB) return -1;
+        if (!isMyTaskA && isMyTaskB) return 1;
+        return new Date(b.createdAt) - new Date(a.createdAt); // Newest first
+    });
+    
+    const done = tasks.filter(t => t.completed).sort((a, b) => {
+        return new Date(b.completedAt) - new Date(a.completedAt);
+    }).slice(0, 5); 
 
-          const adminAssignShift = async (targetChefId) => {
-              if (!adminBookingModal) return;
-              const chef = activeChefs.find(c => c.id === targetChefId);
-              if (!chef) return;
+    return { open, done };
+  }, [tasks, activeChefId, shifts]);
 
-              try {
-                  await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'shifts', adminBookingModal.dateId), {
-                        date: adminBookingModal.dateId,
-                        chefId: chef.id,
-                        chefName: chef.name, 
-                        chefColor: chef.color,
-                        isWeekend: adminBookingModal.isWeekend,
-                        timestamp: new Date().toISOString(),
-                        requestFrom: null,
-                        swapOfferDate: null
-                  });
-              } catch(e) { console.error(e); }
-              setAdminBookingModal(null);
-          }
 
-          const sendSwapRequest = async () => {
-              if (!selectedShiftModal || !activeChefId) return;
-              if (swapOfferId === '') {
-                  alert("Bitte wähle eine Schicht zum Tauschen aus.");
-                  return;
-              }
+  // --- Calendar Generator ---
+  const getCalendarDays = () => {
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const days = [];
+    
+    let startPadding = firstDay.getDay() - 1; 
+    if (startPadding === -1) startPadding = 6;
 
-              const me = activeChefs.find(c => c.id === activeChefId);
-              try {
-                  const shiftRef = doc(db, 'artifacts', appId, 'public', 'data', 'shifts', selectedShiftModal.shift.date);
-                  await updateDoc(shiftRef, {
-                      requestFrom: activeChefId,
-                      requestFromName: me.name,
-                      swapOfferDate: swapOfferId 
-                  });
-                  alert("Tauschanfrage gesendet!");
-              } catch (e) { console.error(e); }
-              setSelectedShiftModal(null);
-          };
+    for (let i = 0; i < startPadding; i++) {
+      days.push({ type: 'empty', id: `empty-${i}` });
+    }
+    for (let i = 1; i <= lastDay.getDate(); i++) {
+      const date = new Date(year, month, i);
+      days.push({ type: 'day', date, id: formatDateId(date) });
+    }
+    return days;
+  };
 
-          const acceptRequest = async (targetShift) => {
-              const requesterId = targetShift.requestFrom;
-              const offerDateId = targetShift.swapOfferDate; 
-              
-              if (!requesterId || !offerDateId) return;
 
-              const requester = activeChefs.find(c => c.id === requesterId);
-              const me = activeChefs.find(c => c.id === activeChefId);
+  // --- Render: Login Screen ---
+  if (!activeChefId) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 relative">
+        <button 
+            onClick={() => { setShowPinEntry(true); setPinError(false); setPinInput(''); }}
+            className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
+        >
+            <Settings className="w-6 h-6" />
+        </button>
 
-              const batch = writeBatch(db);
+        <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
+          <div className="flex justify-center mb-6">
+            <div className="p-4 bg-blue-100 rounded-full">
+              <ShieldCheck className="w-10 h-10 text-blue-600" />
+            </div>
+          </div>
+          <h1 className="text-2xl font-bold text-slate-800 mb-8">Chef-Schichtplaner</h1>
+          <div className="grid grid-cols-1 gap-3">
+            {activeChefs.map(chef => (
+              <button
+                key={chef.id}
+                onClick={() => setActiveChefId(chef.id)}
+                className="flex items-center p-4 border-2 border-slate-100 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group"
+              >
+                <div className={`w-3 h-3 rounded-full ${chef.color} mr-4`}></div>
+                <span className="font-semibold text-slate-700 group-hover:text-blue-700">{chef.name}</span>
+                <ChevronRight className="ml-auto w-4 h-4 text-slate-400" />
+              </button>
+            ))}
+          </div>
+        </div>
 
-              const targetRef = doc(db, 'artifacts', appId, 'public', 'data', 'shifts', targetShift.date);
-              batch.update(targetRef, {
-                  chefId: requester.id,
-                  chefName: requester.name,
-                  chefColor: requester.color,
-                  requestFrom: null,
-                  requestFromName: null,
-                  swapOfferDate: null
-              });
-
-              const offerRef = doc(db, 'artifacts', appId, 'public', 'data', 'shifts', offerDateId);
-              batch.update(offerRef, {
-                  chefId: me.id,
-                  chefName: me.name,
-                  chefColor: me.color,
-                  requestFrom: null,
-                  requestFromName: null,
-                  swapOfferDate: null
-              });
-
-              try {
-                  await batch.commit();
-              } catch(e) {
-                  console.error("Swap failed", e);
-                  alert("Fehler beim Tausch. Vielleicht wurde die angebotene Schicht bereits gelöscht?");
-              }
-          };
-
-          const declineRequest = async (shift) => {
-              try {
-                  const shiftRef = doc(db, 'artifacts', appId, 'public', 'data', 'shifts', shift.date);
-                  await updateDoc(shiftRef, {
-                      requestFrom: null,
-                      requestFromName: null,
-                      swapOfferDate: null
-                  });
-              } catch(e) { console.error(e); }
-          };
-
-          // --- Other Logic ---
-          const changeMonth = (offset) => {
-            const newDate = new Date(currentDate.setMonth(currentDate.getMonth() + offset));
-            setCurrentDate(new Date(newDate));
-          };
-
-          const handleAddTask = async (e) => {
-            e.preventDefault();
-            if (!newTaskText.trim()) return;
-            const creatorId = isAdmin ? 'admin' : activeChefId;
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tasks'), {
-                text: newTaskText.trim(),
-                assignedTo: newTaskAssignee, 
-                createdBy: creatorId,
-                createdAt: new Date().toISOString(),
-                completed: false
-            });
-            setNewTaskText('');
-          };
-
-          const toggleTask = async (task) => {
-              const taskRef = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', task.id);
-              const completerId = isAdmin ? 'admin' : activeChefId;
-              await updateDoc(taskRef, {
-                  completed: !task.completed,
-                  completedAt: !task.completed ? new Date().toISOString() : null,
-                  completedBy: !task.completed ? completerId : null
-              });
-          };
-
-          const deleteTask = async (taskId) => {
-              if(confirm('Aufgabe wirklich löschen?')) {
-                  await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', taskId));
-              }
-          }
-
-          const stats = useMemo(() => {
-            const initialStats = activeChefs.reduce((acc, chef) => {
-              acc[chef.id] = { ...chef, total: 0, weekend: 0 };
-              return acc;
-            }, {});
-            const viewYear = currentDate.getFullYear();
-            const viewMonth = currentDate.getMonth();
-            const now = new Date();
-
-            Object.values(shifts).forEach(shift => {
-              if (!initialStats[shift.chefId]) return;
-              const shiftDate = new Date(shift.date);
-              let shouldCount = false;
-              if (statsFilter === 'month') shouldCount = shiftDate.getFullYear() === viewYear && shiftDate.getMonth() === viewMonth;
-              else if (statsFilter === '3months') shouldCount = Math.ceil(Math.abs(now - shiftDate) / (86400000)) <= 90;
-              else if (statsFilter === 'year') shouldCount = shiftDate.getFullYear() === viewYear;
-
-              if (shouldCount) {
-                 initialStats[shift.chefId].total += 1;
-                 if (shift.isWeekend) initialStats[shift.chefId].weekend += 1;
-              }
-            });
-            return Object.values(initialStats).sort((a, b) => b.total - a.total);
-          }, [shifts, currentDate, statsFilter, activeChefs]);
-
-          const getStatsLabel = () => {
-            if (statsFilter === 'month') return MONTHS_DE[currentDate.getMonth()];
-            if (statsFilter === '3months') return 'Letzte 90 Tage';
-            if (statsFilter === 'year') return `Jahr ${currentDate.getFullYear()}`;
-            return '';
-          };
-
-          const sortedTasks = useMemo(() => {
-            const open = tasks.filter(t => !t.completed).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-            const done = tasks.filter(t => t.completed).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-            return { open, done };
-          }, [tasks, activeChefId]);
-
-          const getCalendarDays = () => {
-            const year = currentDate.getFullYear();
-            const month = currentDate.getMonth();
-            const firstDay = new Date(year, month, 1);
-            const lastDay = new Date(year, month + 1, 0);
-            const days = [];
-            let startPadding = firstDay.getDay() - 1; 
-            if (startPadding === -1) startPadding = 6;
-            for (let i = 0; i < startPadding; i++) days.push({ type: 'empty', id: `empty-${i}` });
-            for (let i = 1; i <= lastDay.getDate(); i++) {
-              const date = new Date(year, month, i);
-              days.push({ type: 'day', date, id: formatDateId(date) });
-            }
-            return days;
-          };
-
-          const calendarDays = getCalendarDays();
-
-          // --- Render ---
-          // NEU: Zeigt den Ladebildschirm so lange an, bis der Benutzer angemeldet UND die Namen geladen sind
-          if (!user || !settingsLoaded) return <div className="min-h-screen flex items-center justify-center text-slate-500">Lade Anwendung...</div>;
-
-          if (!activeChefId && !isAdmin) {
-            return (
-              <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 relative">
-                <button onClick={() => { setShowPinEntry(true); setPinError(false); setPinInput(''); }} className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"><Settings className="w-6 h-6" /></button>
-                <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
-                  <div className="flex justify-center mb-6"><div className="p-4 bg-blue-100 rounded-full"><ShieldCheck className="w-10 h-10 text-blue-600" /></div></div>
-                  <div className="mb-8"><h1 className="text-3xl font-black text-slate-900 tracking-tight">MABELLE</h1><p className="text-sm font-bold text-amber-700 uppercase tracking-[0.2em] mt-1">Manager Planer</p></div>
-                  <div className="grid grid-cols-1 gap-3">
-                    {activeChefs.map(chef => (
-                      <button key={chef.id} onClick={() => handleChefLoginClick(chef)} className="flex items-center p-4 border-2 border-slate-100 rounded-xl hover:border-blue-500 hover:bg-blue-50 transition-all group">
-                        <div className={`w-3 h-3 rounded-full ${chef.color} mr-4`}></div>
-                        <span className="font-semibold text-slate-700 group-hover:text-blue-700">{chef.name}</span>
-                        {chef.pin && <Lock className="ml-auto w-3 h-3 text-slate-300" />}
-                        {!chef.pin && <ChevronRight className="ml-auto w-4 h-4 text-slate-400" />}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* USER LOGIN PIN MODAL (NUMPAD) */}
-                {userLoginState.isOpen && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-                        <div className={`bg-white rounded-2xl shadow-2xl max-w-xs w-full p-6 ${userLoginState.error ? 'animate-shake' : ''}`}>
-                            <div className="flex justify-between items-center mb-6">
-                                <h3 className="text-lg font-bold text-slate-800">Login: {activeChefs.find(c => c.id === userLoginState.chefId)?.name}</h3>
-                                <button onClick={() => setUserLoginState({isOpen:false, chefId:null, attempt:'', error:false})} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
-                            </div>
-                            
-                            {/* Display Dots */}
-                            <div className="flex justify-center gap-2 mb-6 h-8">
-                                {[...Array(4)].map((_, i) => (
-                                    <div key={i} className={`w-4 h-4 rounded-full transition-colors ${i < userLoginState.attempt.length ? 'bg-slate-800' : 'bg-slate-200'}`}></div>
-                                ))}
-                            </div>
-
-                            {/* Numpad */}
-                            <div className="grid grid-cols-3 gap-3">
-                                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
-                                    <button 
-                                        key={num} 
-                                        onClick={() => handleNumPadInput(num.toString())}
-                                        className="h-14 rounded-xl bg-slate-50 text-slate-700 font-bold text-xl hover:bg-slate-100 active:bg-slate-200 transition-colors"
-                                    >
-                                        {num}
-                                    </button>
-                                ))}
-                                <div className="col-span-1"></div> {/* Spacer */}
-                                <button onClick={() => handleNumPadInput('0')} className="h-14 rounded-xl bg-slate-50 text-slate-700 font-bold text-xl hover:bg-slate-100 active:bg-slate-200 transition-colors">0</button>
-                                <button onClick={handleNumPadBackspace} className="h-14 rounded-xl bg-slate-50 text-slate-500 hover:bg-slate-100 active:bg-slate-200 transition-colors flex items-center justify-center">
-                                    <Delete className="w-6 h-6" />
-                                </button>
-                            </div>
+        {/* PIN Entry Modal */}
+        {showPinEntry && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
+                <div className="bg-white rounded-2xl shadow-2xl max-w-xs w-full p-6">
+                    <div className="flex justify-between items-center mb-6">
+                        <div className="flex items-center gap-2">
+                             <KeyRound className="w-5 h-5 text-slate-500"/>
+                             <h3 className="text-lg font-bold text-slate-800">Admin Login</h3>
                         </div>
-                    </div>
-                )}
-
-                {/* ADMIN LOGIN MODAL */}
-                {showPinEntry && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-                        <div className="bg-white rounded-2xl shadow-2xl max-w-xs w-full p-6">
-                            <div className="flex justify-between items-center mb-6"><div className="flex items-center gap-2"><KeyRound className="w-5 h-5 text-slate-500"/><h3 className="text-lg font-bold text-slate-800">Admin Login</h3></div><button onClick={() => setShowPinEntry(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button></div>
-                            <form onSubmit={handlePinSubmit}>
-                                <div className="mb-4"><input type="password" inputMode="numeric" autoFocus value={pinInput} onChange={(e) => {setPinInput(e.target.value); setPinError(false);}} placeholder="PIN eingeben" className={`w-full p-3 text-center text-lg tracking-widest border-2 rounded-xl outline-none transition-colors ${pinError ? 'border-red-500 bg-red-50' : 'border-slate-200 focus:border-blue-500'}`} />{pinError && <p className="text-red-500 text-xs mt-2 text-center font-medium">Falscher Code</p>}</div>
-                                <button type="submit" className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors">Entsperren</button>
-                            </form>
-                        </div>
-                    </div>
-                )}
-
-                {/* ADMIN SETTINGS MODAL */}
-                {showAdminSettings && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-                        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto">
-                            <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-slate-800">Einstellungen</h3><button onClick={() => setShowAdminSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button></div>
-                            
-                            <div className="mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1"><KeyRound className="w-3 h-3"/> Admin Master-PIN</h4>
-                                <input type="text" value={tempNames.admin_pin || ''} onChange={(e) => setTempNames(prev => ({...prev, admin_pin: e.target.value}))} placeholder={DEFAULT_ADMIN_PIN} className="w-full p-2 border border-slate-200 rounded-lg text-sm text-center tracking-widest font-mono focus:ring-2 focus:ring-blue-500 outline-none" />
-                            </div>
-
-                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Benutzer verwalten</h4>
-                            <div className="space-y-3 mb-6">
-                                {CHEF_TEMPLATES.map(chef => (
-                                    <div key={chef.id} className="flex items-center gap-2">
-                                        <div className={`w-3 h-3 rounded-full ${chef.color} flex-shrink-0`}></div>
-                                        <input type="text" value={tempNames[chef.id] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id]: e.target.value}))} placeholder={chef.defaultName} className="flex-1 p-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
-                                        <input type="text" value={tempNames[chef.id + '_pin'] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id + '_pin']: e.target.value}))} placeholder="PIN" className="w-16 p-2 border border-slate-200 rounded-lg text-xs text-center focus:ring-2 focus:ring-blue-500 outline-none" />
-                                    </div>
-                                ))}
-                            </div>
-                            <button onClick={saveNames} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl flex items-center justify-center gap-2 mb-6"><Save className="w-4 h-4" /> Speichern</button>
-                        </div>
-                    </div>
-                )}
-              </div>
-            );
-          }
-
-          const activeChef = activeChefs.find(c => c.id === activeChefId);
-
-          return (
-            <div className={`min-h-screen pb-24 ${isAdmin ? 'bg-orange-50' : 'bg-slate-100'}`}>
-              <header className="bg-white shadow-sm sticky top-0 z-10">
-                <div className="max-w-3xl mx-auto px-4 py-3 flex justify-between items-center">
-                  {isAdmin ? (
-                      <div className="flex items-center gap-2 text-orange-700 font-bold"><UserCog className="w-5 h-5" /><span>Administrator</span></div>
-                  ) : (
-                    <div className="flex items-center gap-3"><div className={`w-10 h-10 rounded-full ${activeChef?.color} flex items-center justify-center text-white font-bold text-sm shadow-sm`}>{activeChef?.name.charAt(0)}</div><div><p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Angemeldet als</p><p className="text-sm font-bold text-slate-800 leading-tight">{activeChef?.name}</p></div></div>
-                  )}
-                  <div className="flex items-center gap-2">
-                      {isAdmin && (
-                          <button onClick={openAdminSettings} className="p-2 text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg transition-colors"><Settings className="w-4 h-4" /></button>
-                      )}
-                      <button onClick={() => { setActiveChefId(null); setIsAdmin(false); }} className="px-4 py-2 bg-slate-100 hover:bg-red-50 text-slate-600 hover:text-red-600 rounded-lg text-xs font-bold uppercase tracking-wide transition-colors">Abmelden</button>
-                  </div>
-                </div>
-              </header>
-
-              <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
-                
-                {/* --- TASK REMINDER MODAL --- */}
-                {showTaskReminder && myOpenTasksForReminder.length > 0 && (
-                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-in fade-in duration-300">
-                        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95">
-                            <div className="flex flex-col items-center text-center gap-4">
-                                <div className="p-3 bg-blue-100 rounded-full animate-bounce">
-                                    <BellRing className="w-8 h-8 text-blue-600" />
-                                </div>
-                                <div>
-                                    <h3 className="text-xl font-black text-slate-800">Wichtige Aufgaben!</h3>
-                                    <p className="text-sm text-slate-500 mt-2">Du hast {myOpenTasksForReminder.length} offene Aufgaben.</p>
-                                </div>
-                                
-                                <div className="w-full bg-slate-50 rounded-xl p-3 max-h-48 overflow-y-auto text-left space-y-2 border border-slate-100">
-                                    {myOpenTasksForReminder.map(task => (
-                                        <div key={task.id} className="flex gap-2 items-start text-sm">
-                                            <span className="text-blue-500 mt-0.5">•</span>
-                                            <span className="text-slate-700 font-medium">{task.text}</span>
-                                        </div>
-                                    ))}
-                                </div>
-
-                                <button 
-                                    onClick={() => setShowTaskReminder(false)}
-                                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors shadow-lg shadow-blue-200"
-                                >
-                                    Verstanden & Gelesen
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* --- NOTIFICATIONS --- */}
-                {showNotifications && !isAdmin && (
-                    <div className="bg-white border-l-4 border-blue-500 rounded-lg shadow-md p-4 mb-4 animate-pop">
-                        <div className="flex items-center justify-between mb-3">
-                            <h3 className="font-bold text-slate-800 flex items-center gap-2"><BellRing className="w-5 h-5 text-blue-500" /> Tauschanfragen</h3>
-                            <button onClick={() => setShowNotifications(false)}><X className="w-4 h-4 text-slate-400" /></button>
-                        </div>
-                        <div className="space-y-3">
-                            {notifications.map(shift => {
-                                const requester = activeChefs.find(c => c.id === shift.requestFrom);
-                                const dateStr = new Date(shift.date).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' });
-                                const offerDateStr = shift.swapOfferDate ? new Date(shift.swapOfferDate).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' }) : "---";
-                                return (
-                                    <div key={shift.date} className="bg-slate-50 p-3 rounded-lg border border-slate-100">
-                                        <p className="text-sm text-slate-700 mb-2"><span className="font-bold text-slate-900">{shift.requestFromName || 'Jemand'}</span> möchte deine Schicht am <span className="font-bold">{dateStr}</span> haben.</p>
-                                        <p className="text-xs text-blue-600 font-bold mb-3 flex items-center gap-1"><ArrowRightLeft className="w-3 h-3"/> Er bietet dafür: <span className="bg-blue-100 px-1 rounded">{offerDateStr}</span></p>
-                                        <div className="flex gap-2">
-                                            <button onClick={() => acceptRequest(shift)} className="flex-1 bg-green-500 hover:bg-green-600 text-white text-xs font-bold py-2 rounded shadow-sm">Tausch annehmen</button>
-                                            <button onClick={() => declineRequest(shift)} className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-600 text-xs font-bold py-2 rounded">Ablehnen</button>
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
-
-                <section className="bg-white rounded-2xl shadow-sm p-4 sm:p-5 border border-slate-200">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
-                    <div className="flex items-center gap-2"><BarChart3 className="w-5 h-5 text-slate-600" /><h2 className="font-bold text-slate-800">Fairness: {getStatsLabel()}</h2></div>
-                    <div className="flex bg-slate-100 p-1 rounded-lg self-start sm:self-auto">
-                      <button onClick={() => setStatsFilter('month')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${statsFilter === 'month' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>Monat</button>
-                      <button onClick={() => setStatsFilter('3months')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${statsFilter === '3months' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>3 Mon.</button>
-                      <button onClick={() => setStatsFilter('year')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${statsFilter === 'year' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>Jahr</button>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-4 gap-2 text-center text-xs sm:text-sm">
-                    <div className="text-left font-semibold text-slate-400 uppercase tracking-wider pb-2">Name</div><div className="font-semibold text-slate-400 uppercase tracking-wider pb-2">Total</div><div className="font-semibold text-orange-400 uppercase tracking-wider pb-2">Fr/Sa</div><div className="font-semibold text-slate-400 uppercase tracking-wider pb-2">Status</div>
-                  </div>
-                  <div className="space-y-3">
-                    {stats.map((stat, idx) => {
-                      let highWeekendThreshold = statsFilter === 'year' ? 30 : statsFilter === '3months' ? 8 : 3;
-                      return (
-                      <div key={idx} className="grid grid-cols-4 gap-2 items-center bg-slate-50 p-2 rounded-lg">
-                        <div className="text-left font-medium flex items-center gap-2"><div className={`w-2 h-2 rounded-full ${stat.color}`}></div><span className="truncate">{stat.name}</span></div>
-                        <div className="font-bold text-slate-700">{stat.total}</div>
-                        <div className={`font-bold ${stat.weekend >= highWeekendThreshold ? 'text-red-500' : 'text-orange-500'}`}>{stat.weekend}</div>
-                        <div>{stat.weekend >= highWeekendThreshold ? (<span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Viel</span>) : (<span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">OK</span>)}</div>
-                      </div>
-                    )})}
-                  </div>
-                </section>
-
-                <div className="space-y-4">
-                    <div className="flex items-center justify-between bg-white p-3 rounded-xl shadow-sm border border-slate-200">
-                    <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-slate-100 rounded-full"><ChevronLeft className="w-5 h-5 text-slate-600" /></button>
-                    <h2 className="text-lg font-bold text-slate-800">{MONTHS_DE[currentDate.getMonth()]} {currentDate.getFullYear()}</h2>
-                    <button onClick={() => changeMonth(1)} className="p-2 hover:bg-slate-100 rounded-full"><ChevronRight className="w-5 h-5 text-slate-600" /></button>
-                    </div>
-
-                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50">
-                            {DAYS_DE.map((day, i) => (<div key={day} className={`py-3 text-center text-xs font-bold ${ (i === 4 || i === 5) ? 'text-orange-600' : 'text-slate-500'}`}>{day}</div>))}
-                        </div>
-                        <div className="grid grid-cols-7">
-                            {calendarDays.map((item, index) => {
-                            if (item.type === 'empty') return <div key={item.id} className="bg-slate-50/50 border-b border-r border-slate-100 min-h-[80px]"></div>;
-                            
-                            const dateId = formatDateId(item.date);
-                            const shift = shifts[dateId];
-                            const isToday = formatDateId(new Date()) === dateId;
-                            
-                            return (
-                                <button key={item.id} onClick={() => handleDayClick(item.date)} className={`relative min-h-[80px] p-1 border-b border-r border-slate-100 text-left transition-colors ${isToday && !isAdmin ? 'bg-blue-50/50' : ''} ${isWeekend(item.date) ? 'bg-orange-50/30' : ''} hover:bg-slate-50 ${isAdmin ? 'cursor-cell' : ''}`}>
-                                <span className={`text-xs font-medium block mb-1 w-6 h-6 flex items-center justify-center rounded-full ${isToday ? 'bg-blue-600 text-white' : 'text-slate-400'} ${isWeekend(item.date) && !isToday ? 'text-orange-400' : ''}`}>{item.date.getDate()}</span>
-                                {shift ? (
-                                    <div className={`text-xs p-1.5 rounded-md text-white font-medium shadow-sm relative overflow-hidden ${shift.chefColor}`}>
-                                    {shift.requestFrom && (<div className="absolute right-0 top-0 w-2 h-2 bg-white rounded-full m-1 animate-pulse"></div>)}
-                                    {(!isAdmin && shift.chefId === activeChefId) ? 'Ich' : (shift.chefName.split(' ')[1] || shift.chefName)}
-                                    </div>
-                                ) : (
-                                    <div className="h-full w-full flex items-center justify-center opacity-0 hover:opacity-100"><span className="text-[10px] uppercase font-bold text-slate-300 tracking-tighter">{(isAdmin) ? 'Setzen' : '+ Übernehmen'}</span></div>
-                                )}
-                                {isWeekend(item.date) && !shift && (<div className="absolute bottom-1 right-1"><AlertCircle className="w-3 h-3 text-orange-200" /></div>)}
-                                </button>
-                            );
-                            })}
-                        </div>
-                    </div>
-                </div>
-
-                <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                    <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-                        <div className="flex items-center gap-2"><CheckCircle2 className="w-5 h-5 text-blue-600" /><h2 className="font-bold text-slate-800">Team Aufgaben</h2></div>
-                        <span className="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-1 rounded-full">{sortedTasks.open.length} Offen</span>
-                    </div>
-                    <div className="p-4 border-b border-slate-100">
-                        <form onSubmit={handleAddTask} className="flex flex-col gap-3">
-                            <input type="text" placeholder="Neue Aufgabe..." value={newTaskText} onChange={(e) => setNewTaskText(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
-                            <div className="flex gap-2">
-                                <select value={newTaskAssignee} onChange={(e) => setNewTaskAssignee(e.target.value)} className="p-2 border border-slate-200 rounded-xl text-sm bg-white flex-1 focus:ring-2 focus:ring-blue-500 outline-none">
-                                    <option value="all">Für Alle</option>{activeChefs.map(c => <option key={c.id} value={c.id}>An: {c.name}</option>)}
-                                </select>
-                                <button type="submit" disabled={!newTaskText.trim()} className="bg-blue-600 hover:bg-blue-700 text-white px-4 rounded-xl flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors"><Plus className="w-5 h-5" /></button>
-                            </div>
-                        </form>
+                        <button onClick={() => setShowPinEntry(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
                     </div>
                     
-                    {/* OPEN TASKS */}
-                    <div className="divide-y divide-slate-100">
-                        {sortedTasks.open.length === 0 ? (<div className="p-8 text-center text-slate-400 text-sm">Keine offenen Aufgaben. Sauber! 🎉</div>) : (sortedTasks.open.map(task => {
-                                const assignedChef = activeChefs.find(c => c.id === task.assignedTo);
-                                const isMyTask = task.assignedTo === activeChefId;
-                                const isAll = task.assignedTo === 'all';
-                                const canComplete = isAll || isMyTask || isAdmin;
-                                const canDelete = isAll || isMyTask || isAdmin || task.createdBy === activeChefId;
+                    <form onSubmit={handlePinSubmit}>
+                        <div className="mb-4">
+                            <input 
+                                type="password" 
+                                inputMode="numeric"
+                                autoFocus
+                                value={pinInput}
+                                onChange={(e) => {setPinInput(e.target.value); setPinError(false);}}
+                                placeholder="PIN eingeben (0303)"
+                                className={`w-full p-3 text-center text-lg tracking-widest border-2 rounded-xl outline-none transition-colors ${pinError ? 'border-red-500 bg-red-50' : 'border-slate-200 focus:border-blue-500'}`}
+                            />
+                            {pinError && <p className="text-red-500 text-xs mt-2 text-center font-medium">Falscher Code</p>}
+                        </div>
+                        <button 
+                            type="submit"
+                            className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
+                        >
+                            Entsperren
+                        </button>
+                    </form>
+                </div>
+            </div>
+        )}
 
-                                return (
-                                    <div key={task.id} className={`p-4 flex items-center gap-3 hover:bg-slate-50 transition-colors ${isMyTask ? 'bg-blue-50/30' : ''}`}>
-                                        <div className="flex-1 min-w-0"><p className={`text-sm text-slate-800 font-medium ${isMyTask ? 'text-blue-900' : ''}`}>{task.text}</p><div className="flex items-center gap-2 mt-1">{isAll ? (<span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">Alle</span>) : (<span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded flex items-center gap-1 ${assignedChef?.bgLight} ${assignedChef?.text}`}>{assignedChef?.name}</span>)}{isMyTask && <span className="text-[10px] text-blue-600 font-bold">• Deine Aufgabe</span>}</div></div>
-                                        <div className="flex items-center gap-2">
-                                            {canComplete ? (<button onClick={() => toggleTask(task)} className="bg-green-100 hover:bg-green-200 text-green-700 border border-green-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 shadow-sm"><Check className="w-3 h-3" /> Erledigt</button>) : (<div className="text-slate-300 p-2" title="Nur der zugewiesene Chef kann dies erledigen"><Lock className="w-4 h-4" /></div>)}
-                                            {canDelete && <button onClick={() => deleteTask(task.id)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors" title="Löschen"><Trash2 className="w-4 h-4" /></button>}
-                                        </div>
-                                    </div>
-                                );
-                            })
-                        )}
+        {/* Admin Modal */}
+        {showAdmin && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
+                <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="text-lg font-bold text-slate-800">Einstellungen</h3>
+                        <button onClick={() => setShowAdmin(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+                    </div>
+                    
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Namen bearbeiten</h4>
+                    <div className="space-y-3 mb-6">
+                        {CHEF_TEMPLATES.map(chef => (
+                            <div key={chef.id} className="flex items-center gap-3">
+                                <div className={`w-3 h-3 rounded-full ${chef.color} flex-shrink-0`}></div>
+                                <input 
+                                    type="text" 
+                                    value={tempNames[chef.id] || ''} 
+                                    onChange={(e) => setTempNames(prev => ({...prev, [chef.id]: e.target.value}))}
+                                    placeholder={chef.defaultName}
+                                    className="flex-1 p-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                />
+                            </div>
+                        ))}
                     </div>
 
-                    {/* COMPLETED TASKS */}
-                    {sortedTasks.done.length > 0 && (
-                        <div className="bg-slate-50 border-t border-slate-200">
-                            <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider flex justify-between items-center">
-                                <span>Kürzlich erledigt (max. 3 Tage)</span>
-                            </div>
-                            <div className="divide-y divide-slate-100/50">
-                                {sortedTasks.done.map(task => {
-                                    const doneByChef = activeChefs.find(c => c.id === task.completedBy);
-                                    return (
-                                        <div key={task.id} className="px-4 py-3 flex items-center gap-3 group">
-                                            <button onClick={() => toggleTask(task)} className="w-5 h-5 flex items-center justify-center rounded-full border border-slate-200 text-slate-300 hover:text-blue-600 hover:border-blue-600 hover:bg-white transition-all bg-white" title="Wiederherstellen"><RotateCcw className="w-3 h-3" /></button>
-                                            <div className="flex-1 text-xs text-slate-400 line-through decoration-slate-300 group-hover:text-slate-500 transition-colors">{task.text}</div>
-                                            {doneByChef && (<div className={`w-5 h-5 rounded-full text-[10px] text-white flex items-center justify-center grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100 transition-all ${doneByChef.color}`} title={`Erledigt von ${doneByChef.name}`}>{doneByChef.name.charAt(0)}</div>)}
-                                            <button onClick={() => deleteTask(task.id)} className="text-slate-300 hover:text-red-500 transition-colors ml-2" title="Endgültig löschen"><Trash2 className="w-3 h-3" /></button>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    )}
-                </section>
-              </main>
+                    <button 
+                        onClick={saveNames}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl flex items-center justify-center gap-2 mb-6"
+                    >
+                        <Save className="w-4 h-4" />
+                        Speichern
+                    </button>
 
-              {/* ADMIN SETTINGS MODAL */}
-                {showAdminSettings && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-                        <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 max-h-[90vh] overflow-y-auto">
-                            <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-slate-800">Einstellungen</h3><button onClick={() => setShowAdminSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button></div>
-                            
-                            <div className="mb-6 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1"><KeyRound className="w-3 h-3"/> Admin Master-PIN</h4>
-                                <input type="text" value={tempNames.admin_pin || ''} onChange={(e) => setTempNames(prev => ({...prev, admin_pin: e.target.value}))} placeholder={DEFAULT_ADMIN_PIN} className="w-full p-2 border border-slate-200 rounded-lg text-sm text-center tracking-widest font-mono focus:ring-2 focus:ring-blue-500 outline-none" />
-                            </div>
-
-                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Benutzer verwalten</h4>
-                            <div className="space-y-3 mb-6">
-                                {CHEF_TEMPLATES.map(chef => (
-                                    <div key={chef.id} className="flex items-center gap-2">
-                                        <div className={`w-3 h-3 rounded-full ${chef.color} flex-shrink-0`}></div>
-                                        <input type="text" value={tempNames[chef.id] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id]: e.target.value}))} placeholder={chef.defaultName} className="flex-1 p-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
-                                        <input type="text" value={tempNames[chef.id + '_pin'] || ''} onChange={(e) => setTempNames(prev => ({...prev, [chef.id + '_pin']: e.target.value}))} placeholder="PIN" className="w-16 p-2 border border-slate-200 rounded-lg text-xs text-center focus:ring-2 focus:ring-blue-500 outline-none" />
-                                    </div>
-                                ))}
-                            </div>
-                            <button onClick={saveNames} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl flex items-center justify-center gap-2 mb-6"><Save className="w-4 h-4" /> Speichern</button>
-                        </div>
-                    </div>
-                )}
-
-              {/* ADMIN BOOKING MODAL (Select Chef) */}
-              {adminBookingModal && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in">
-                      <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6">
-                          <div className="flex justify-between items-center mb-4">
-                              <div><h3 className="text-lg font-bold text-slate-800">Schicht eintragen</h3><p className="text-xs text-slate-500">{adminBookingModal.dateString}</p></div>
-                              <button onClick={() => setAdminBookingModal(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
-                          </div>
-                          <div className="grid grid-cols-1 gap-2">
-                              {activeChefs.map(chef => (
-                                  <button key={chef.id} onClick={() => adminAssignShift(chef.id)} className="flex items-center p-3 border border-slate-100 rounded-xl hover:bg-slate-50 transition-colors">
-                                      <div className={`w-3 h-3 rounded-full ${chef.color} mr-3`}></div><span className="font-medium text-slate-700">{chef.name}</span><Plus className="ml-auto w-4 h-4 text-slate-400" />
-                                  </button>
-                              ))}
-                          </div>
-                      </div>
-                  </div>
-              )}
-
-              {/* SHIFT ACTION MODAL (User & Admin) */}
-              {selectedShiftModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95 duration-200">
-                        <div className="flex flex-col items-center text-center gap-4">
-                            {/* ADMIN MODE ACTIONS */}
-                            {selectedShiftModal.isAdminAction ? (
-                                <>
-                                    <div className="p-3 bg-slate-800 rounded-full"><UserCog className="w-8 h-8 text-white" /></div>
-                                    <div><h3 className="text-lg font-bold text-slate-800">Schicht verwalten</h3><p className="text-sm text-slate-500 mt-1">{selectedShiftModal.shift.chefName} am {selectedShiftModal.dateString}</p></div>
-                                    <button onClick={deleteShift} className="w-full py-3 px-4 bg-white border-2 border-red-100 text-red-600 hover:bg-red-50 hover:border-red-200 font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"><Trash2 className="w-4 h-4" /> Schicht löschen</button>
-                                </>
-                            ) : (
-                                /* USER MODE ACTIONS */
-                                selectedShiftModal.isMine ? (
-                                    <>
-                                        <div className="p-3 bg-blue-100 rounded-full"><Settings className="w-8 h-8 text-blue-600" /></div>
-                                        <div><h3 className="text-lg font-bold text-slate-800">Deine Schicht verwalten</h3><p className="text-sm text-slate-500 mt-1">{selectedShiftModal.dateString}</p></div>
-                                        <button onClick={deleteShift} className="w-full py-3 px-4 bg-white border-2 border-red-100 text-red-600 hover:bg-red-50 hover:border-red-200 font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"><Trash2 className="w-4 h-4" /> Löschen</button>
-                                    </>
-                                ) : (
-                                    <>
-                                        <div className="p-3 bg-orange-100 rounded-full"><ArrowRightLeft className="w-8 h-8 text-orange-600" /></div>
-                                        <div><h3 className="text-lg font-bold text-slate-800">Tausch vorschlagen</h3><p className="text-sm text-slate-500 mt-1">für {selectedShiftModal.shift.chefName} am {selectedShiftModal.dateString}</p></div>
-                                        <div className="w-full text-left">
-                                            <label className="text-xs font-bold text-slate-400 uppercase mb-2 block">Biete deine Schicht:</label>
-                                            <select value={swapOfferId} onChange={(e) => setSwapOfferId(e.target.value)} className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm outline-none focus:ring-2 focus:ring-blue-500 mb-4">
-                                                <option value="">-- Wähle eine Schicht --</option>
-                                                {myFutureShifts.map(s => (<option key={s.date} value={s.date}>{new Date(s.date).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' })} {s.isWeekend ? ' (Wochenende)' : ''}</option>))}
-                                            </select>
-                                        </div>
-                                        <button onClick={sendSwapRequest} className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2">Tauschanfrage senden</button>
-                                    </>
-                                )
-                            )}
-                            <button onClick={() => setSelectedShiftModal(null)} className="text-slate-400 text-xs hover:text-slate-600 mt-2">Abbrechen</button>
-                        </div>
+                    <div className="border-t border-slate-100 pt-4">
+                         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Datenverwaltung</h4>
+                         <button 
+                            onClick={startHistoryMode}
+                            className="w-full bg-slate-100 hover:bg-orange-50 hover:text-orange-600 text-slate-600 font-medium py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
+                        >
+                            <Edit3 className="w-4 h-4" />
+                            Alte Daten nachtragen
+                        </button>
+                        <p className="text-[10px] text-slate-400 mt-2 text-center">
+                            Aktiviert den Historien-Modus, um vergangene Schichten ohne Bestätigung schnell einzutragen.
+                        </p>
                     </div>
                 </div>
-              )}
             </div>
-          );
-        }
+        )}
+      </div>
+    );
+  }
 
-        const root = createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+  // --- Render: Main App ---
+  const activeChef = activeChefs.find(c => c.id === activeChefId);
+  const calendarDays = getCalendarDays();
+  const displayChefId = isHistoryMode ? historyTargetChefId : activeChefId;
+  const displayChef = activeChefs.find(c => c.id === displayChefId);
+
+  // Derive today's shift info
+  const todayId = formatDateId(new Date());
+  const iHaveShiftToday = shifts[todayId]?.chefId === activeChefId;
+
+  return (
+    <div className={`min-h-screen pb-24 ${isHistoryMode ? 'bg-orange-50' : 'bg-slate-100'}`}>
+      {/* Header */}
+      <header className="bg-white shadow-sm sticky top-0 z-10">
+        <div className="max-w-3xl mx-auto px-4 py-3 flex justify-between items-center">
+          {isHistoryMode ? (
+              <div className="flex items-center gap-2 text-orange-600 font-bold">
+                  <Edit3 className="w-5 h-5" />
+                  <span>Historien-Modus</span>
+              </div>
+          ) : (
+            <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-full ${activeChef?.color} flex items-center justify-center text-white font-bold text-sm shadow-sm`}>
+                {activeChef?.name.charAt(0)}
+                </div>
+                <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Angemeldet als</p>
+                <p className="text-sm font-bold text-slate-800 leading-tight">{activeChef?.name}</p>
+                </div>
+            </div>
+          )}
+
+          {isHistoryMode ? (
+              <button 
+                onClick={() => { setIsHistoryMode(false); setActiveChefId(null); }}
+                className="px-4 py-2 bg-slate-800 text-white rounded-lg text-xs font-bold uppercase tracking-wide"
+              >
+                Beenden
+              </button>
+          ) : (
+            <button 
+                onClick={() => setActiveChefId(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-red-50 text-slate-600 hover:text-red-600 rounded-lg text-xs font-bold uppercase tracking-wide transition-colors"
+            >
+                Abmelden
+            </button>
+          )}
+        </div>
+      </header>
+
+      <main className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+        
+        {/* Fairness Dashboard */}
+        <section className="bg-white rounded-2xl shadow-sm p-4 sm:p-5 border border-slate-200">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="w-5 h-5 text-slate-600" />
+              <h2 className="font-bold text-slate-800">Fairness: {getStatsLabel()}</h2>
+            </div>
+            <div className="flex bg-slate-100 p-1 rounded-lg self-start sm:self-auto">
+              <button onClick={() => setStatsFilter('month')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${statsFilter === 'month' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>Monat</button>
+              <button onClick={() => setStatsFilter('3months')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${statsFilter === '3months' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>3 Mon.</button>
+              <button onClick={() => setStatsFilter('year')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${statsFilter === 'year' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>Jahr</button>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-4 gap-2 text-center text-xs sm:text-sm">
+            <div className="text-left font-semibold text-slate-400 uppercase tracking-wider pb-2">Name</div>
+            <div className="font-semibold text-slate-400 uppercase tracking-wider pb-2">Total</div>
+            <div className="font-semibold text-orange-400 uppercase tracking-wider pb-2">Fr/Sa</div>
+            <div className="font-semibold text-slate-400 uppercase tracking-wider pb-2">Status</div>
+          </div>
+
+          <div className="space-y-3">
+            {stats.map((stat, idx) => {
+              let highWeekendThreshold = statsFilter === 'year' ? 30 : statsFilter === '3months' ? 8 : 3;
+              return (
+              <div key={idx} className="grid grid-cols-4 gap-2 items-center bg-slate-50 p-2 rounded-lg">
+                <div className="text-left font-medium flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${stat.color}`}></div>
+                  <span className="truncate">{stat.name}</span>
+                </div>
+                <div className="font-bold text-slate-700">{stat.total}</div>
+                <div className={`font-bold ${stat.weekend >= highWeekendThreshold ? 'text-red-500' : 'text-orange-500'}`}>
+                  {stat.weekend}
+                </div>
+                <div>
+                   {stat.weekend >= highWeekendThreshold ? (
+                     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Viel</span>
+                   ) : (
+                     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">OK</span>
+                   )}
+                </div>
+              </div>
+            )})}
+          </div>
+        </section>
+
+        {/* Calendar Section */}
+        <div className="space-y-4">
+            <div className="flex items-center justify-between bg-white p-3 rounded-xl shadow-sm border border-slate-200">
+            <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-slate-100 rounded-full">
+                <ChevronLeft className="w-5 h-5 text-slate-600" />
+            </button>
+            <h2 className="text-lg font-bold text-slate-800">
+                {MONTHS_DE[currentDate.getMonth()]} {currentDate.getFullYear()}
+            </h2>
+            <button onClick={() => changeMonth(1)} className="p-2 hover:bg-slate-100 rounded-full">
+                <ChevronRight className="w-5 h-5 text-slate-600" />
+            </button>
+            </div>
+
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50">
+                    {DAYS_DE.map((day, i) => (
+                    <div key={day} className={`py-3 text-center text-xs font-bold ${i >= 5 ? 'text-orange-600' : 'text-slate-500'}`}>
+                        {day}
+                    </div>
+                    ))}
+                </div>
+                <div className="grid grid-cols-7">
+                    {calendarDays.map((item, index) => {
+                    if (item.type === 'empty') return <div key={item.id} className="bg-slate-50/50 border-b border-r border-slate-100 min-h-[80px]"></div>;
+                    
+                    const dateId = formatDateId(item.date);
+                    const shift = shifts[dateId];
+                    const isWeekendDay = isWeekend(item.date);
+                    const isToday = formatDateId(new Date()) === dateId;
+                    
+                    return (
+                        <button
+                        key={item.id}
+                        onClick={() => handleDayClick(item.date)}
+                        className={`
+                            relative min-h-[80px] p-1 border-b border-r border-slate-100 text-left transition-colors
+                            ${isToday && !isHistoryMode ? 'bg-blue-50/50' : ''}
+                            ${isWeekendDay ? 'bg-orange-50/30' : ''}
+                            hover:bg-slate-50
+                            ${isHistoryMode ? 'cursor-cell' : ''}
+                        `}
+                        >
+                        <span className={`text-xs font-medium block mb-1 w-6 h-6 flex items-center justify-center rounded-full ${isToday ? 'bg-blue-600 text-white' : 'text-slate-400'} ${isWeekendDay && !isToday ? 'text-orange-400' : ''}`}>
+                            {item.date.getDate()}
+                        </span>
+                        {shift ? (
+                            <div className={`text-xs p-1.5 rounded-md text-white font-medium shadow-sm ${shift.chefColor}`}>
+                            {(!isHistoryMode && shift.chefId === activeChefId) ? 'Ich' : shift.chefName.split(' ')[1]}
+                            </div>
+                        ) : (
+                            <div className="h-full w-full flex items-center justify-center opacity-0 hover:opacity-100">
+                                <span className="text-[10px] uppercase font-bold text-slate-300 tracking-tighter">
+                                    {isHistoryMode ? 'Setzen' : '+ Übernehmen'}
+                                </span>
+                            </div>
+                        )}
+                        {isWeekendDay && !shift && (
+                            <div className="absolute bottom-1 right-1"><AlertCircle className="w-3 h-3 text-orange-200" /></div>
+                        )}
+                        </button>
+                    );
+                    })}
+                </div>
+            </div>
+        </div>
+
+        {/* Tasks Section */}
+        {!isHistoryMode && (
+        <section className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-blue-600" />
+                    <h2 className="font-bold text-slate-800">Team Aufgaben</h2>
+                </div>
+                <span className="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-1 rounded-full">{sortedTasks.open.length} Offen</span>
+            </div>
+
+            {/* Task Input */}
+            <div className="p-4 border-b border-slate-100">
+                <form onSubmit={handleAddTask} className="flex flex-col gap-3">
+                    <input 
+                        type="text" 
+                        placeholder="Neue Aufgabe..." 
+                        value={newTaskText}
+                        onChange={(e) => setNewTaskText(e.target.value)}
+                        className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm"
+                    />
+                    <div className="flex gap-2">
+                        <select 
+                            value={newTaskAssignee}
+                            onChange={(e) => setNewTaskAssignee(e.target.value)}
+                            className="p-2 border border-slate-200 rounded-xl text-sm bg-white flex-1 focus:ring-2 focus:ring-blue-500 outline-none"
+                        >
+                            <option value="all">Für Alle</option>
+                            <option value="shift_today">Die heutige Schicht</option>
+                            {activeChefs.map(c => <option key={c.id} value={c.id}>An: {c.name}</option>)}
+                        </select>
+                        <button 
+                            type="submit"
+                            disabled={!newTaskText.trim()}
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-4 rounded-xl flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        >
+                            <Plus className="w-5 h-5" />
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            {/* Open Tasks List */}
+            <div className="divide-y divide-slate-100">
+                {sortedTasks.open.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 text-sm">
+                        Keine offenen Aufgaben. Sauber! 🎉
+                    </div>
+                ) : (
+                    sortedTasks.open.map(task => {
+                        const assignedChef = activeChefs.find(c => c.id === task.assignedTo);
+                        const isShiftToday = task.assignedTo === 'shift_today';
+                        
+                        // Derive if it's "my task"
+                        const isMyTask = task.assignedTo === activeChefId || (isShiftToday && iHaveShiftToday);
+                        const isAll = task.assignedTo === 'all';
+                        
+                        // Wer darf abhaken?
+                        const canComplete = isAll || isMyTask;
+                        
+                        const isExpanded = expandedTaskId === task.id;
+                        const commentCount = task.comments ? task.comments.length : 0;
+
+                        return (
+                            <div key={task.id} className={`flex flex-col border-b border-slate-100 hover:bg-slate-50 transition-colors ${isMyTask ? 'bg-blue-50/30' : ''}`}>
+                                <div className="p-4 flex items-center gap-3">
+                                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setExpandedTaskId(isExpanded ? null : task.id)}>
+                                        <p className={`text-sm text-slate-800 font-medium ${isMyTask ? 'text-blue-900' : ''}`}>
+                                            {task.text}
+                                        </p>
+                                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                                            {isAll ? (
+                                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 bg-slate-200 px-1.5 py-0.5 rounded">Alle</span>
+                                            ) : isShiftToday ? (
+                                                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">Heutige Schicht</span>
+                                            ) : (
+                                                <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded flex items-center gap-1 ${assignedChef?.bgLight || 'bg-slate-100'} ${assignedChef?.text || 'text-slate-400'}`}>
+                                                   {assignedChef?.name || 'Unbekannt'}
+                                                </span>
+                                            )}
+                                            
+                                            {isMyTask && <span className="text-[10px] text-blue-600 font-bold">• Deine Aufgabe</span>}
+                                            
+                                            {commentCount > 0 && (
+                                                <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                                                    <MessageSquare className="w-3 h-3" /> {commentCount}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="flex items-center gap-1 sm:gap-2">
+                                        {canComplete ? (
+                                            <button 
+                                                onClick={() => toggleTask(task)}
+                                                className="bg-green-100 hover:bg-green-200 text-green-700 border border-green-200 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 shadow-sm"
+                                            >
+                                                <Check className="w-4 h-4" />
+                                                <span className="hidden sm:inline">Erledigt</span>
+                                            </button>
+                                        ) : (
+                                            <div className="text-slate-300 p-2" title="Nur der zugewiesene Chef kann dies erledigen">
+                                                <Lock className="w-4 h-4" />
+                                            </div>
+                                        )}
+                                        <button 
+                                            onClick={() => setExpandedTaskId(isExpanded ? null : task.id)} 
+                                            className="p-1 sm:p-2 text-slate-400 hover:bg-slate-200 rounded-lg transition-colors"
+                                        >
+                                            {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Expanded Area (Comments) */}
+                                {isExpanded && (
+                                    <div className="px-4 pb-4 bg-slate-50/50">
+                                        <div className="border-t border-slate-200 pt-3">
+                                            <h5 className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1 mb-3">
+                                                <MessageSquare className="w-3 h-3" /> Kommentare & Notizen
+                                            </h5>
+                                            
+                                            <div className="space-y-2 mb-3">
+                                                {(task.comments || []).map(comment => (
+                                                    <div key={comment.id} className="bg-white p-2 rounded-lg border border-slate-200 text-sm shadow-sm">
+                                                        <div className="flex justify-between items-center mb-1">
+                                                            <span className="font-bold text-slate-700 text-xs">{comment.authorName}</span>
+                                                            <span className="text-[10px] text-slate-400">{new Date(comment.timestamp).toLocaleTimeString('de-DE', {hour: '2-digit', minute:'2-digit'})}</span>
+                                                        </div>
+                                                        <p className="text-slate-600">{comment.text}</p>
+                                                    </div>
+                                                ))}
+                                                {(!task.comments || task.comments.length === 0) && (
+                                                    <p className="text-xs text-slate-400 italic">Noch keine Notizen vorhanden.</p>
+                                                )}
+                                            </div>
+                                            
+                                            <form onSubmit={(e) => handleAddComment(e, task.id)} className="flex gap-2">
+                                                <input 
+                                                    type="text" 
+                                                    value={newComments[task.id] || ''} 
+                                                    onChange={(e) => setNewComments({...newComments, [task.id]: e.target.value})} 
+                                                    placeholder="Kommentar schreiben..." 
+                                                    className="flex-1 p-2 text-sm border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" 
+                                                />
+                                                <button 
+                                                    type="submit" 
+                                                    disabled={!newComments[task.id]?.trim()} 
+                                                    className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-lg disabled:opacity-50 transition-colors"
+                                                >
+                                                    <Send className="w-4 h-4" />
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })
+                )}
+            </div>
+
+            {/* Completed Tasks (Archive) */}
+            {sortedTasks.done.length > 0 && (
+                <div className="bg-slate-50 border-t border-slate-200">
+                    <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider">Kürzlich erledigt</div>
+                    <div className="divide-y divide-slate-100/50">
+                        {sortedTasks.done.map(task => {
+                            const doneByChef = activeChefs.find(c => c.id === task.completedBy);
+                            return (
+                                <div key={task.id} className="px-4 py-3 flex items-center gap-3 opacity-60 grayscale hover:grayscale-0 hover:opacity-100 transition-all">
+                                    <div className="w-5 h-5 rounded-full bg-green-100 flex items-center justify-center">
+                                        <Check className="w-3 h-3 text-green-600" />
+                                    </div>
+                                    <div className="flex-1 text-xs text-slate-500 line-through">
+                                        {task.text}
+                                    </div>
+                                    {doneByChef && (
+                                        <div className={`w-5 h-5 rounded-full text-[10px] text-white flex items-center justify-center ${doneByChef.color}`} title={`Erledigt von ${doneByChef.name}`}>
+                                            {doneByChef.name.charAt(0)}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+        </section>
+        )}
+
+      </main>
+
+      {/* History Mode Sticky Footer */}
+      {isHistoryMode && (
+          <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 shadow-2xl z-40 animate-in slide-in-from-bottom-10">
+              <div className="max-w-md mx-auto flex flex-col gap-2">
+                  <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Eintrag für:</span>
+                  <div className="flex gap-2 overflow-x-auto pb-2">
+                      {activeChefs.map(chef => (
+                          <button
+                            key={chef.id}
+                            onClick={() => setHistoryTargetChefId(chef.id)}
+                            className={`
+                                flex items-center px-4 py-2 rounded-xl border-2 transition-all whitespace-nowrap
+                                ${historyTargetChefId === chef.id 
+                                    ? `bg-slate-800 text-white border-slate-800 shadow-lg scale-105` 
+                                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}
+                            `}
+                          >
+                            <div className={`w-2 h-2 rounded-full ${chef.color} mr-2`}></div>
+                            <span className="text-sm font-bold">{chef.name}</span>
+                          </button>
+                      ))}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Delete Confirmation Modal (Only for Normal Mode) */}
+      {deleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95 duration-200">
+                <div className="flex flex-col items-center text-center gap-4">
+                    <div className="p-3 bg-red-100 rounded-full">
+                        <Trash2 className="w-8 h-8 text-red-600" />
+                    </div>
+                    <div>
+                        <h3 className="text-lg font-bold text-slate-800">Schicht löschen?</h3>
+                        <p className="text-sm text-slate-500 mt-2">
+                            Möchtest du deine Schicht am <br/>
+                            <span className="font-semibold text-slate-800 text-base">{deleteModal.dateString}</span>
+                            <br/> wirklich entfernen?
+                        </p>
+                    </div>
+                    <div className="flex gap-3 w-full mt-2">
+                        <button 
+                            onClick={() => setDeleteModal(null)}
+                            className="flex-1 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition-colors"
+                        >
+                            Abbrechen
+                        </button>
+                        <button 
+                            onClick={performDelete}
+                            className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition-colors shadow-sm"
+                        >
+                            Löschen
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+    </div>
+  );
+}
